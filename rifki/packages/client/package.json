@@ -1,0 +1,10 @@
+{
+  "name": "@rifki/client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Rıfkı web istemcisi: düz JavaScript (ES modülleri), derleme/paket yok; sunucu tarafından statik sunulur",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

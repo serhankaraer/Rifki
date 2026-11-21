@@ -1,0 +1,16 @@
+{
+  "name": "@rifki/server",
+  "version": "0.1.0",
+  "description": "Rıfkı oyun sunucusu: odalar, koltuklar, bot zamanlaması, bağlantı kopma/devralma",
+  "type": "module",
+  "main": "src/index.js",
+  "dependencies": {
+    "@rifki/engine": "*",
+    "@rifki/ai": "*",
+    "ws": "^8.18.0"
+  },
+  "scripts": {
+    "start": "node src/main.js",
+    "test": "node --test"
+  }
+}

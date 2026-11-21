@@ -1,0 +1,13 @@
+{
+  "name": "@rifki/ai",
+  "version": "0.1.0",
+  "description": "Rıfkı bot oyuncuları: 1-100 kişilik özellikleri, hafıza/çıkarım ve Monte Carlo karar mekanizması",
+  "type": "module",
+  "main": "src/index.js",
+  "dependencies": {
+    "@rifki/engine": "*"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

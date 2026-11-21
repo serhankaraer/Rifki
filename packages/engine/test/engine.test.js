@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   makeDeck, suitOf, createRng, createGame, applyCommand, viewFor, currentOptions, RuleError,
-  legalCards, trickWinner, scoreHand, selectableContracts, newLedger, isLedgerFeasible,
+  legalCards, breaksHearts, rifkiNeedsRedeal, trickWinner, scoreHand, selectableContracts, newLedger, isLedgerFeasible,
   PENALTY_TYPES, STRUCTURE,
 } from '../src/index.js';
 
@@ -18,8 +18,18 @@ function randomContractCmd(state, rng) {
   return { type: 'CHOOSE_CONTRACT', seat: o.seat, contract, trump: contract === 'KOZ' ? pick(['C', 'D', 'H', 'S'], rng) : undefined };
 }
 
+// Sözleşme seç; Rıfkı yeniden dağıtımı tetiklenirse (faz hâlâ CONTRACT_SELECT) tekrar seçer.
+function chooseUntilPlaying(state, rng, contractCmd) {
+  let s = state;
+  for (let i = 0; i < 50 && s.phase === 'CONTRACT_SELECT'; i++) {
+    s = applyCommand(s, contractCmd ? { ...contractCmd, seat: s.turn } : randomContractCmd(s, rng)).state;
+  }
+  assert.equal(s.phase, 'PLAYING');
+  return s;
+}
+
 function playOutHand(state, rng, contractCmd) {
-  let s = applyCommand(state, contractCmd ?? randomContractCmd(state, rng)).state;
+  let s = chooseUntilPlaying(state, rng, contractCmd);
   while (s.phase === 'PLAYING') {
     const o = currentOptions(s);
     assert.ok(o.cards.length > 0, 'oynanabilir kart olmalı');
@@ -105,7 +115,7 @@ test('oyuncu başı 3 ceza + 2 koz; defter tutarlılığı', () => {
 });
 
 // ---- tur kuralları ----
-const mk = (contract, hands, plays, heartsBroken = false) => ({ contract, hands, trick: { leader: plays[0]?.seat ?? 0, plays }, heartsBroken });
+const mk = (contract, hands, plays, heartsBroken = false, trumpBroken = false) => ({ contract, hands, trick: { leader: plays[0]?.seat ?? 0, plays }, heartsBroken, trumpBroken });
 const led9C = [{ seat: 1, card: '9C' }];
 
 test('renge uyma zorunluluğu', () => {
@@ -141,6 +151,74 @@ test('Rıfkı/Kupa: kupa dökülmeden kupa açılamaz (yalnız kupası kalan aç
   assert.equal(open('KUPA', ['2H', '3H'], false).length, 2);
   assert.equal(open('KUPA', ['2H', '5C'], true).length, 2);
   assert.equal(open('KIZ', ['2H', '5C'], false).length, 2); // diğer sözleşmelerde kısıt yok
+});
+
+test('Kupa almaz: kupa yalnız rengi olmayan oyuncu kupa atmak zorunda kalınca dökülür; kupa açmak/kupaya kupa atmak dökmez', () => {
+  const led = (c) => [{ seat: 1, card: c }];
+  assert.equal(breaksHearts('KUPA', led('9C'), '2H'), true, 'rengi olmayan kupa attı');
+  assert.equal(breaksHearts('KUPA', [], '2H'), false, 'kupa ile açılış (yalnız kupası kalan)');
+  assert.equal(breaksHearts('KUPA', led('9H'), '2H'), false, 'kupaya kupa uydu');
+  assert.equal(breaksHearts('KUPA', led('9C'), '2D'), false);
+  assert.equal(breaksHearts('RIFKI', [], '2H'), false, 'Rıfkı da aynı: kupa açmak dökmez');
+  assert.equal(breaksHearts('RIFKI', led('9C'), 'KH'), true, 'Rıfkı: rengi olmayan kupa papazı atınca dökülür');
+  // oyun içinde: yalnız kupası olan açar, diğerleri uyar -> dökülmez; sonra rengi olmayan kupa atınca dökülür
+  let { state } = createGame({ seed: 'hb' });
+  state = applyCommand(state, { type: 'CHOOSE_CONTRACT', seat: state.turn, contract: 'KUPA' }).state;
+  const d = state.turn; const order = [0, 1, 2, 3].map((i) => (d + i) % 4);
+  const layout = [['2H', '3H'], ['4H', '5C'], ['6H', '7C'], ['8H', '9C']];
+  state.hand.hands = [0, 1, 2, 3].map((seat) => layout[order.indexOf(seat)]);
+  state = applyCommand(state, { type: 'PLAY_CARD', seat: order[0], card: '2H' }).state;
+  state = applyCommand(state, { type: 'PLAY_CARD', seat: order[1], card: '4H' }).state;
+  assert.equal(state.hand.heartsBroken, false);
+  state = applyCommand(state, { type: 'PLAY_CARD', seat: order[2], card: '6H' }).state;
+  state = applyCommand(state, { type: 'PLAY_CARD', seat: order[3], card: '8H' }).state;
+  assert.equal(state.hand.heartsBroken, false, 'dört kupa tur oynandı ama kimse rengi olmadığı için kupa atmadı');
+});
+
+test('Rıfkı yeniden dağıtım şartı: başkasında kupa yalnızca [A], [K] ya da [A,K]', () => {
+  const H = (...hearts) => ['2C', '3C', ...hearts];
+  const mkHands = (a, b, c, d) => [a, b, c, d];
+  assert.equal(rifkiNeedsRedeal(mkHands(H('2H', '5H'), H('AH'), H('3H', '4H'), H('9H')), 0), true, 'tek A');
+  assert.equal(rifkiNeedsRedeal(mkHands(H('2H'), H('3H', '4H'), H('KH'), H('9H')), 0), true, 'tek K');
+  assert.equal(rifkiNeedsRedeal(mkHands(H('2H'), H('3H', '4H'), H('9H'), H('AH', 'KH')), 0), true, 'A ve K');
+  assert.equal(rifkiNeedsRedeal(mkHands(H('2H'), H('AH', 'QH'), H('KH', '3H'), H('AH', 'KH', 'QH')), 0), false, 'A+Q, K+3, A+K+Q yeniden dağıtım gerektirmez');
+  assert.equal(rifkiNeedsRedeal(mkHands(H('AH'), H('2H'), H('3H'), H('4H')), 0), false, 'seçicinin kendi eli sayılmaz');
+  assert.equal(rifkiNeedsRedeal(mkHands(H(), H('2H'), H('3H'), H('4H')), 0), false, 'kupası olmayan oyuncu tetiklemez');
+});
+
+test('Rıfkı seçilince tetikleyici varsa el yeniden dağıtılır; sözleşme kaydedilmez, seçici yine seçer', () => {
+  let { state } = createGame({ seed: 'redeal' });
+  state.handNo = 3; state.firstDeclarer = 0; state.declarer = 2; state.turn = 2;
+  const d = state.declarer;
+  const others = [0, 1, 2, 3].filter((x) => x !== d);
+  // tetikleyici: bir rakipte yalnız kupa A
+  const hands = state.hand.hands.map((x) => x.filter((c) => !c.endsWith('H')));
+  const noHearts = state.hand.hands.flat().filter((c) => c.endsWith('H'));
+  hands[others[0]] = [...hands[others[0]].slice(0, 12), 'AH'];
+  const before = JSON.stringify(hands);
+  state.hand.hands = hands;
+  const ledgerBefore = JSON.stringify(state.ledger);
+  const r = applyCommand(state, { type: 'CHOOSE_CONTRACT', seat: d, contract: 'RIFKI' });
+  assert.ok(r.events.some((e) => e.type === 'REDEALT'));
+  assert.ok(r.events.some((e) => e.type === 'HAND_DEALT'));
+  assert.equal(JSON.stringify(r.state.ledger), ledgerBefore, 'sözleşme hakkı harcanmaz');
+  assert.equal(r.state.phase, 'CONTRACT_SELECT');
+  assert.equal(r.state.handNo, 3);
+  assert.equal(r.state.declarer, d);
+  assert.equal(r.state.turn, d);
+  assert.equal(r.state.redeals, 1);
+  assert.equal(new Set(r.state.hand.hands.flat()).size, 52);
+  assert.notEqual(JSON.stringify(r.state.hand.hands), before);
+  assert.equal(r.state.hand.contract, null);
+  // tetikleyici yoksa normal ilerler
+  const ok = JSON.parse(JSON.stringify(state));
+  ok.hand.hands = ok.hand.hands.map((x, i) => (i === others[0] ? [...x.slice(0, 12), '2H'] : x));
+  const r2 = applyCommand(ok, { type: 'CHOOSE_CONTRACT', seat: d, contract: 'RIFKI' });
+  assert.ok(!r2.events.some((e) => e.type === 'REDEALT'));
+  assert.equal(r2.state.phase, 'PLAYING');
+  // yalnız Rıfkı'da: Kız almaz seçilirse yeniden dağıtım yok
+  const r3 = applyCommand(state, { type: 'CHOOSE_CONTRACT', seat: d, contract: 'KIZ' });
+  assert.ok(!r3.events.some((e) => e.type === 'REDEALT'));
 });
 
 test('tur kazananı', () => {
@@ -182,6 +260,137 @@ test('hatalı komutlar anlamlı hata kodu verir', () => {
   assert.throws(() => applyCommand(state, { type: 'CHOOSE_CONTRACT', seat: wrong, contract: 'KUPA' }), (e) => e.code === 'NOT_YOUR_TURN');
   assert.throws(() => applyCommand(state, { type: 'PLAY_CARD', seat: state.declarer, card: '2C' }), (e) => e.code === 'WRONG_PHASE');
   assert.throws(() => applyCommand(state, { type: 'NEXT_HAND' }), (e) => e.code === 'WRONG_PHASE');
+});
+
+test('koz: koz atıldığında sonraki oyuncu kozu yükseltmek zorunda; büyüğü yoksa herhangi koz', () => {
+  const koz = { type: 'KOZ', trump: 'S' };
+  // koz açıldı (9S): elindeki 10S ve QS daha büyük, 3S küçük -> yalnız büyükler
+  const led = [{ seat: 1, card: '9S' }];
+  assert.deepEqual(legalCards(mk(koz, [['3S', '10S', 'QS', '2D'], [], [], []], led), 0).sort(), ['10S', 'QS']);
+  // büyüğü yoksa elindeki koz serisinden herhangi biri (koz zorunlu)
+  assert.deepEqual(legalCards(mk(koz, [['3S', '5S', '2D'], [], [], []], led), 0).sort(), ['3S', '5S']);
+});
+
+test('koz: rengi olmayan oyuncu kesmek zorunda; masada koz varsa onu da yükseltmek zorunda', () => {
+  const koz = { type: 'KOZ', trump: 'S' };
+  const plays = [{ seat: 1, card: '9C' }, { seat: 2, card: '6S' }]; // 6S ile kesildi
+  assert.deepEqual(legalCards(mk(koz, [['3S', '8S', 'KS', '2D'], [], [], []], plays), 0).sort(), ['8S', 'KS']);
+  assert.deepEqual(legalCards(mk(koz, [['3S', '4S', '2D'], [], [], []], plays), 0).sort(), ['3S', '4S']);
+  // renge uyan oyuncu kozu yükseltmek zorunda değil (renk zorunluluğu geçerli)
+  assert.deepEqual(legalCards(mk(koz, [['2C', '3S'], [], [], []], plays), 0), ['2C']);
+});
+
+test('koz: kırılmadan koz açılamaz; kozun A, K ve Q üçü birden varsa ya da yalnız koz kaldıysa açılabilir', () => {
+  const koz = { type: 'KOZ', trump: 'S' };
+  const lead = (hand, broken = false) => legalCards(mk(koz, [hand, [], [], []], [], false, broken), 0).sort();
+  assert.deepEqual(lead(['3S', '9S', '2D', '5C']), ['2D', '5C']);
+  assert.deepEqual(lead(['3S', 'JS', '2D']), ['2D']);
+  assert.deepEqual(lead(['3S', 'AS', 'KS', '2D']), ['2D'], 'A ve K yetmez');
+  assert.deepEqual(lead(['3S', 'QS', 'KS', '2D']), ['2D'], 'K ve Q yetmez');
+  assert.deepEqual(lead(['3S', 'AS', 'KS', 'QS', '2D']), ['2D', '3S', 'AS', 'KS', 'QS'].sort(), 'A+K+Q varsa her koz açılabilir');
+  assert.deepEqual(lead(['3S', '9S']), ['3S', '9S']); // yalnız koz
+  assert.deepEqual(lead(['3S', '9S', '2D'], true), ['2D', '3S', '9S'].sort()); // kırılmış
+});
+
+test('koz kırılması yalnız rengi olmayan oyuncunun kozla kesmesiyle olur (koz açmak kırmaz)', () => {
+  let { state } = createGame({ seed: 'broken' });
+  state.handNo = 5; // koz seçilebilen bir el
+  state = applyCommand(state, { type: 'CHOOSE_CONTRACT', seat: state.turn, contract: 'KOZ', trump: 'S' }).state;
+  assert.equal(viewFor(state, 0).trumpBroken, false);
+  const rng = createRng('broken-play');
+  let expected = false;
+  while (state.phase === 'PLAYING') {
+    const o = currentOptions(state);
+    const card = pick(o.cards, rng);
+    const plays = state.hand.trick.plays;
+    if (plays.length > 0 && suitOf(plays[0].card) !== 'S' && suitOf(card) === 'S') expected = true;
+    state = applyCommand(state, { type: 'PLAY_CARD', seat: o.seat, card }).state;
+    assert.equal(viewFor(state, 0).trumpBroken, expected);
+  }
+  assert.deepEqual(viewFor(state, 0).penaltyTaken, [[], [], [], []]);
+});
+
+test('koz açılışı (A+K+Q ile) kozu kırmaz; kesme kırar', () => {
+  const mkState = (hands) => {
+    let { state } = createGame({ seed: 'cut' });
+    state.handNo = 5;
+    state = applyCommand(state, { type: 'CHOOSE_CONTRACT', seat: state.turn, contract: 'KOZ', trump: 'S' }).state;
+    const d = state.turn;
+    state.hand.hands = hands.map((x) => x.slice());
+    return { state, d };
+  };
+  // d koz açar (A K Q elinde), diğerleri koz oynar -> kırılmaz
+  const a = mkState([['AS', 'KS', 'QS', '2D'], ['3S', '4D'], ['5S', '6D'], ['7S', '8D']]);
+  let st = a.state;
+  const order = [0, 1, 2, 3].map((i) => (a.d + i) % 4);
+  // el dizilimi koltuk numarasına göre atanmış olduğundan, açıcı koltuğun eli ilk dizi olmalı
+  st.hand.hands = [0, 1, 2, 3].map((seat) => [['AS', 'KS', 'QS', '2D'], ['3S', '4D'], ['5S', '6D'], ['7S', '8D']][order.indexOf(seat)]);
+  st = applyCommand(st, { type: 'PLAY_CARD', seat: order[0], card: 'AS' }).state;
+  assert.equal(st.hand.trumpBroken, false);
+  st = applyCommand(st, { type: 'PLAY_CARD', seat: order[1], card: '3S' }).state;
+  assert.equal(st.hand.trumpBroken, false);
+  // d koz olmayan renkle açar, sonraki rengi olmayıp kozla keser -> kırılır
+  const b = mkState([['2D', '9C'], ['3S', '4H'], ['5S', '6H'], ['7S', '8H']]);
+  const ob = [0, 1, 2, 3].map((i) => (b.d + i) % 4);
+  let sb = b.state;
+  sb.hand.hands = [0, 1, 2, 3].map((seat) => [['2D', '9C'], ['3S', '4H'], ['5S', '6H'], ['7S', '8H']][ob.indexOf(seat)]);
+  sb = applyCommand(sb, { type: 'PLAY_CARD', seat: ob[0], card: '2D' }).state;
+  assert.equal(sb.hand.trumpBroken, false);
+  sb = applyCommand(sb, { type: 'PLAY_CARD', seat: ob[1], card: '3S' }).state;
+  assert.equal(sb.hand.trumpBroken, true);
+});
+
+test('erken bitiş: tüm ceza kartları alınınca el biter (Kız/Erkek/Kupa/Rıfkı); El Almaz ve Son İki bitmez', () => {
+  for (const [type, total] of [['RIFKI', 1], ['KIZ', 4], ['ERKEK', 8], ['KUPA', 13]]) {
+    let early = 0;
+    for (let g = 0; g < 40; g++) {
+      const rng = createRng(`early-${type}-${g}`);
+      let { state } = createGame({ seed: `early-${type}-${g}` });
+      const o = currentOptions(state);
+      state = chooseUntilPlaying(state, rng, { type: 'CHOOSE_CONTRACT', contract: type });
+      let sawAll = false;
+      while (state.phase === 'PLAYING') {
+        const v = viewFor(state, 0);
+        const taken = v.penaltyTaken.flat().length;
+        assert.ok(taken < total, 'tüm ceza kartları alınmışsa el sürmemeli');
+        const oo = currentOptions(state);
+        state = applyCommand(state, { type: 'PLAY_CARD', seat: oo.seat, card: pick(oo.cards, rng) }).state;
+      }
+      const r = state.handResults.at(-1);
+      assert.ok(r.tricksPlayed <= 13);
+      if (r.earlyEnd) { early++; assert.ok(r.tricksPlayed < 13); }
+      assert.equal(r.deltas.reduce((a, b) => a + b, 0), -{ RIFKI: 320, KIZ: 400, ERKEK: 480, KUPA: 390 }[type]);
+      sawAll = true;
+      assert.ok(sawAll);
+    }
+    assert.ok(early > 0, `${type}: en az bir el erken bitmeli`);
+  }
+  for (const type of ['EL_ALMAZ', 'SON_IKI']) {
+    const rng = createRng(`noearly-${type}`);
+    let { state } = createGame({ seed: `noearly-${type}` });
+    const o = currentOptions(state);
+    state = playOutHand(state, rng, { type: 'CHOOSE_CONTRACT', seat: o.seat, contract: type });
+    assert.equal(state.handResults.at(-1).tricksPlayed, 13);
+    assert.equal(state.handResults.at(-1).earlyEnd, false);
+  }
+});
+
+test('oyun sonu: yalnız sıfırın üstündeki oyuncular kazanır', () => {
+  const rng = createRng('winners');
+  let { state } = createGame({ seed: 'winners' });
+  let last;
+  for (let hand = 1; hand <= STRUCTURE.hands; hand++) {
+    state = chooseUntilPlaying(state, rng);
+    while (state.phase === 'PLAYING') {
+      const oo = currentOptions(state);
+      const res = applyCommand(state, { type: 'PLAY_CARD', seat: oo.seat, card: pick(oo.cards, rng) });
+      state = res.state;
+      const ended = res.events.find((e) => e.type === 'GAME_ENDED');
+      if (ended) last = ended;
+    }
+    if (hand < STRUCTURE.hands) state = applyCommand(state, { type: 'NEXT_HAND' }).state;
+  }
+  assert.deepEqual(last.winners, state.scores.flatMap((s, i) => (s > 0 ? [i] : [])));
 });
 
 // ---- tam oyun simülasyonu ----

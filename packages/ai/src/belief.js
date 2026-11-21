@@ -25,6 +25,10 @@ function isRelevantCard(contract, card) {
   return isPenaltyCard(contract.type, card);
 }
 
+function isOpenPenaltyCard(contract, card) {
+  return !!contract && contract.type !== KOZ && isPenaltyCard(contract.type, card);
+}
+
 // Renk bitiren oyuncunun attığı karttan çıkarılabilecek ek bilgiler (kuralların tersten okunması)
 function applyExclusions(mem, seat, card, contract) {
   switch (contract.type) {
@@ -71,7 +75,9 @@ export function updateMemory(mem, view, traits, rng) {
   for (let i = mem.processed; i < events.length; i++) {
     const e = events[i];
     const pNotice = isRelevantCard(view.contract, e.card) ? Math.min(1, pBase + 0.25) : pBase;
-    const noticed = e.seat === view.seat || e.current || rng() < pNotice;
+    // Ceza kartları alanın önünde açık durur: her zaman bilinir (hafıza/takip özelliğinden bağımsız)
+    const openPenalty = isOpenPenaltyCard(view.contract, e.card);
+    const noticed = e.seat === view.seat || e.current || openPenalty || rng() < pNotice;
     if (noticed) mem.seen.add(e.card);
     if (noticed && e.seat !== view.seat && suitOf(e.card) !== e.led && rng() < pInfer) {
       mem.voids[e.seat].add(e.led);
@@ -79,6 +85,8 @@ export function updateMemory(mem, view, traits, rng) {
     }
   }
   mem.processed = events.length;
+  // Masada açık duran (alınmış) ceza kartları her zaman bilinen kartlardır
+  for (const cards of view.penaltyTaken ?? []) for (const c of cards) mem.seen.add(c);
 }
 
 /** Botun bilinmeyen saydığı kartlar: tüm deste - kendi eli - fark edilen oynanmış kartlar. */

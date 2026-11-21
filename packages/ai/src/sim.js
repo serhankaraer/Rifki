@@ -1,6 +1,6 @@
 // Hızlı el simülasyonu (Monte Carlo rollout) ve sezgisel (heuristic) oynama politikası.
 // Motorun saf fonksiyonlarını (legalCards, trickWinner) kullanır ama durumu klonlamaz.
-import { suitOf, rankOf, rankSymbol, legalCards, trickWinner, KOZ, POINTS } from '@rifki/engine';
+import { suitOf, rankOf, rankSymbol, legalCards, trickWinner, breaksHearts, KOZ, POINTS } from '@rifki/engine';
 
 export function cardPenalty(type, card) {
   switch (type) {
@@ -89,7 +89,7 @@ function playKoz(legal, plays, trump) {
 }
 
 /**
- * Sezgisel oynama. h: { contract, hands, trick: { plays }, heartsBroken }; trickNo: oynanan turun numarası (1..13).
+ * Sezgisel oynama. h: { contract, hands, trick: { plays }, heartsBroken, trumpBroken }; trickNo: oynanan turun numarası (1..13).
  * Yalnızca h.hands[seat] gerçek olmalıdır.
  */
 export function heuristicPlay(h, seat, trickNo) {
@@ -104,17 +104,18 @@ export function heuristicPlay(h, seat, trickNo) {
  * hands: 4 el (değiştirilir), plays: oynanmakta olan turun kartları (değiştirilir), turn: sıradaki koltuk,
  * trickNo: oynanmakta olan turun numarası. Dönen: koltuk başına kalan turlardan gelen puan farkı.
  */
-export function rollout(contract, hands, plays, turn, trickNo, heartsBroken) {
+export function rollout(contract, hands, plays, turn, trickNo, heartsBroken, trumpBroken = false) {
   const deltas = [0, 0, 0, 0];
-  const h = { contract, hands, trick: { plays }, heartsBroken };
+  const h = { contract, hands, trick: { plays }, heartsBroken, trumpBroken };
   let cur = plays;
   for (;;) {
     while (cur.length < 4) {
       const card = heuristicPlay(h, turn, trickNo);
       const hand = hands[turn];
       hand.splice(hand.indexOf(card), 1);
+      if (breaksHearts(contract.type, cur, card)) h.heartsBroken = true;
       cur.push({ seat: turn, card });
-      if (suitOf(card) === 'H') h.heartsBroken = true;
+      if (contract.type === KOZ && cur.length > 1 && suitOf(cur[0].card) !== contract.trump && suitOf(card) === contract.trump) h.trumpBroken = true;
       turn = (turn + 1) % 4;
     }
     const winner = trickWinner(cur, contract);

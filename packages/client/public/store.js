@@ -52,6 +52,7 @@ export function reduce(state, msg, now = Date.now()) {
       let next = { ...state, view: msg.view, seq: msg.seq, thinking: null };
       for (const e of msg.events ?? []) {
         if (e.type === 'TRICK_WON') next.shownTrick = { plays: e.plays, winner: e.winner, until: now + TRICK_SHOW_MS };
+        if (e.type === 'REDEALT') next = addToast(next, 'game.redealt', {}, 'info', now, TOAST_MS);
       }
       return next;
     }

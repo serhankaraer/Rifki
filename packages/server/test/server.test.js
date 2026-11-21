@@ -149,7 +149,7 @@ test('bot hamlesi düşünme süresinden (2-10 sn) önce uygulanmaz, sonra uygul
   assert.notEqual(turn, 0, 'sıra botta');
   const think = botMsgs(r.host).at(-1);
   assert.equal(think.seat, turn);
-  assert.ok(think.delayMs >= 2000 && think.delayMs <= 10000, `gecikme ${think.delayMs}`);
+  assert.ok(think.delayMs >= 1000 && think.delayMs <= 3000, `gecikme ${think.delayMs}`);
   const before = JSON.stringify(room(h, r.code).state);
   h.scheduler.advance(think.delayMs - 1);
   assert.equal(JSON.stringify(room(h, r.code).state), before, 'süre dolmadan değişmez');

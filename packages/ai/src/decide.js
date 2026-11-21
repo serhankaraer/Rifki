@@ -1,7 +1,7 @@
 // Karar mekanizması: sözleşme seçimi ve kart oynama.
 // Monte Carlo (determinization): bilinmeyen kartlar olası dağılımlarla paylaştırılır, her aday hamle
 // sezgisel politikayla sonuna kadar oynatılıp puanlanır.
-import { SUITS, suitOf } from '@rifki/engine';
+import { SUITS, suitOf, KOZ, breaksHearts } from '@rifki/engine';
 import { updateMemory, sampleWorld, unseenPool } from './belief.js';
 import { heuristicPlay, rollout } from './sim.js';
 import { gauss } from './traits.js';
@@ -84,7 +84,7 @@ export function decideCard(view, profile, memory, rng, opts = {}) {
     if (rng() < pErr) return pickRandom(legal, rng);
     const hands = [[], [], [], []];
     hands[me] = view.myHand.slice();
-    const h = { contract: view.contract, hands, trick: { plays: view.trick.plays.map((p) => ({ ...p })) }, heartsBroken: view.heartsBroken };
+    const h = { contract: view.contract, hands, trick: { plays: view.trick.plays.map((p) => ({ ...p })) }, heartsBroken: view.heartsBroken, trumpBroken: view.trumpBroken };
     return heuristicPlay(h, me, trickNo);
   }
 
@@ -102,7 +102,8 @@ export function decideCard(view, profile, memory, rng, opts = {}) {
       hands[me].splice(hands[me].indexOf(card), 1);
       const plays = view.trick.plays.map((p) => ({ ...p }));
       plays.push({ seat: me, card });
-      const deltas = rollout(view.contract, hands, plays, (me + 1) % 4, trickNo, view.heartsBroken || suitOf(card) === 'H');
+      const deltas = rollout(view.contract, hands, plays, (me + 1) % 4, trickNo, view.heartsBroken || breaksHearts(view.contract.type, view.trick.plays, card),
+        view.trumpBroken || (view.contract.type === KOZ && plays.length > 1 && suitOf(plays[0].card) !== view.contract.trump && suitOf(card) === view.contract.trump));
       results[ci].push(utility(deltas, me, leader, aggrFactor));
     });
   }
@@ -133,7 +134,7 @@ export function decideContract(view, profile, memory, rng, opts = {}) {
     options.forEach((opt, oi) => {
       const hands = world.map((a) => a.slice());
       const contract = { type: opt.contract, trump: opt.trump };
-      const deltas = rollout(contract, hands, [], me, 1, false);
+      const deltas = rollout(contract, hands, [], me, 1, false, false);
       results[oi].push(utility(deltas, me, -1, 0));
     });
   }

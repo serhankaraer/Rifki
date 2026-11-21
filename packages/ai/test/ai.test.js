@@ -41,7 +41,7 @@ test('özellikler 1-100 arası ve normal dağılımlı (uçlar nadir, ortalar s�
 });
 
 // ---- düşünme gecikmesi ----
-test('düşünme gecikmesi 2-10 sn aralığında, hız arttıkça kısalır', () => {
+test('düşünme gecikmesi 1-3 sn aralığında, hız arttıkça kısalır', () => {
   const rng = createRng('delay');
   const avg = (speed) => {
     let s = 0;
@@ -55,8 +55,8 @@ test('düşünme gecikmesi 2-10 sn aralığında, hız arttıkça kısalır', ()
   const fast = avg(100);
   const mid = avg(50);
   const slow = avg(1);
-  assert.ok(fast < 2300, `hızlı ~2 sn (${fast})`);
-  assert.ok(slow > 9000, `yavaş ~10 sn (${slow})`);
+  assert.ok(fast < 1300, `hızlı ~1 sn (${fast})`);
+  assert.ok(slow > 2700, `yavaş ~3 sn (${slow})`);
   assert.ok(fast < mid && mid < slow);
 });
 
@@ -108,6 +108,26 @@ test('çıkarım: Kız elinde rengi yokken kız atmayan oyuncunun kızı olmadı
   updateMemory(mem, syntheticView({ type: 'KIZ', trump: null }), { tracking: 100, inference: 100 }, createRng('q'));
   for (const q of ['QC', 'QD', 'QH', 'QS']) assert.ok(mem.cannot[2].has(q));
   assert.ok(!mem.cannot[1].has('QC'));
+});
+
+test('açık ceza kartları: önde duran ceza kartları takip özelliği 1 olsa bile hep bilinir', () => {
+  const view = {
+    seat: 0, handNo: 3, contract: { type: 'KIZ', trump: null }, myHand: [],
+    trickHistory: [
+      { trickNo: 1, leader: 1, plays: [{ seat: 1, card: '9C' }, { seat: 2, card: 'QD' }, { seat: 3, card: 'KC' }, { seat: 0, card: '3C' }], winner: 3 },
+    ],
+    trick: { leader: 3, plays: [] },
+    penaltyTaken: [[], [], [], ['QD']],
+  };
+  for (let i = 0; i < 200; i++) {
+    const mem = createMemory();
+    updateMemory(mem, view, { tracking: 1, inference: 1 }, createRng(`open-${i}`));
+    assert.ok(mem.seen.has('QD'), 'ceza kartı hep bilinir');
+  }
+  // yalnız penaltyTaken'da olan kart da (olay listesinde olmasa bile) bilinir
+  const mem = createMemory();
+  updateMemory(mem, { ...view, trickHistory: [], penaltyTaken: [['QH'], [], [], []] }, { tracking: 1, inference: 1 }, createRng('x'));
+  assert.ok(mem.seen.has('QH'));
 });
 
 test('takip özelliği oynanan kartları fark etme olasılığını belirler', () => {

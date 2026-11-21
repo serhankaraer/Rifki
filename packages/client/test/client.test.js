@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initialState, reduce, seatName, activeTrick, nextExpiry, pruneExpired, TRICK_SHOW_MS, TOAST_MS } from '../public/store.js';
-import { relativePositions, positionOf, parseCard, isRed } from '../public/cards.js';
+import { relativePositions, positionOf, parseCard, isRed, groupHand } from '../public/cards.js';
+import { buildSheet, finalStandings } from '../public/sheet.js';
 import { t, setLocale, registerLocale } from '../public/i18n.js';
 import tr from '../public/locales/tr.js';
 import { ERR } from '../../server/src/protocol.js';
@@ -33,6 +34,62 @@ test('kart ayrıştırma ve renk', () => {
   assert.deepEqual(parseCard('KS'), { rank: 'K', suit: 'S' });
   assert.equal(isRed('H'), true); assert.equal(isRed('D'), true);
   assert.equal(isRed('S'), false); assert.equal(isRed('C'), false);
+});
+
+// ---------- el gruplama ----------
+test('groupHand: renk grupları, grup içinde büyükten küçüğe; aynı renkli seriler yan yana gelmez', () => {
+  const hand = ['2C', 'AC', '9H', 'KH', '3D', 'QS', '10S', 'JS', '4D', '7H'];
+  const groups = groupHand(hand);
+  assert.equal(groups.length, 4);
+  assert.deepEqual(groups.map((g) => isRed(g.suit)), [false, true, false, true].map((x, i) => (isRed(groups[0].suit) ? [true, false, true, false][i] : x)));
+  for (let i = 1; i < groups.length; i++) assert.notEqual(isRed(groups[i].suit), isRed(groups[i - 1].suit));
+  const hearts = groups.find((g) => g.suit === 'H').cards;
+  assert.deepEqual(hearts, ['KH', '9H', '7H']);
+  assert.deepEqual(groups.find((g) => g.suit === 'S').cards, ['QS', 'JS', '10S']);
+  assert.equal(groups.flatMap((g) => g.cards).length, hand.length);
+});
+
+test('groupHand: üç renk varsa fazla olan renk kenarlara gider; eksik renkte de mümkün olduğunca değişir', () => {
+  const g3 = groupHand(['2C', '3S', '4H']);
+  assert.deepEqual(g3.map((g) => isRed(g.suit)), [false, true, false]);
+  const g3b = groupHand(['2C', '3H', '4D']);
+  assert.deepEqual(g3b.map((g) => isRed(g.suit)), [true, false, true]);
+  assert.deepEqual(groupHand([]), []);
+  assert.equal(groupHand(['AH']).length, 1);
+});
+
+// ---------- puan cetveli ----------
+test('buildSheet: ceza satırları iki çizgi, koz bloğu 8 satır, toplamlar ve işaretler', () => {
+  const results = [
+    { handNo: 1, declarer: 0, contract: { type: 'RIFKI', trump: null }, deltas: [-320, 0, 0, 0] },
+    { handNo: 2, declarer: 1, contract: { type: 'KIZ', trump: null }, deltas: [-100, -200, -100, 0] },
+    { handNo: 5, declarer: 2, contract: { type: 'KOZ', trump: 'S' }, deltas: [100, 150, 200, 200] },
+    { handNo: 9, declarer: 3, contract: { type: 'RIFKI', trump: null }, deltas: [0, 0, -320, 0], earlyEnd: true },
+  ];
+  const ledger = { koz: [0, 0, 1, 0], ceza: [1, 1, 0, 1], typeUses: {} };
+  const sheet = buildSheet(results, ledger);
+  assert.equal(sheet.rows.length, 6);
+  assert.deepEqual(sheet.rows.map((r) => r.type), ['RIFKI', 'EL_ALMAZ', 'KUPA', 'ERKEK', 'KIZ', 'SON_IKI']);
+  assert.deepEqual(sheet.rows.map((r) => r.points), [320, 50, 30, 60, 100, 180]);
+  const rifki = sheet.rows[0];
+  assert.equal(rifki.lines.length, 2);
+  assert.equal(rifki.lines[0].handNo, 1);
+  assert.equal(rifki.lines[1].handNo, 9);
+  assert.equal(rifki.lines[1].earlyEnd, true);
+  assert.equal(sheet.rows[1].lines[0], null);
+  assert.equal(sheet.koz.length, 8);
+  assert.equal(sheet.koz[0].trump, 'S');
+  assert.equal(sheet.koz[1], null);
+  assert.deepEqual(sheet.marks[2], { ceza: 0, koz: 1 });
+  assert.deepEqual(sheet.totals.map((x) => x.ceza), [-420, -200, -420, 0]);
+  assert.deepEqual(sheet.totals.map((x) => x.koz), [100, 150, 200, 200]);
+  assert.deepEqual(sheet.totals.map((x) => x.total), [-320, -50, -220, 200]);
+});
+
+test('finalStandings: yalnız sıfırın üstündekiler kazanır, sıralama puana göre', () => {
+  const st = finalStandings([120, -300, 0, 180]);
+  assert.deepEqual(st.map((x) => x.seat), [3, 0, 2, 1]);
+  assert.deepEqual(st.map((x) => x.won), [true, true, false, false]);
 });
 
 // ---------- indirgeyici ----------
@@ -69,6 +126,13 @@ test('biten tur kısa süre masada kalır, sonra yeni tur görünür', () => {
   assert.equal(later.finished, false);
   assert.equal(later.plays.length, 0);
   assert.equal(pruneExpired(s, 1000 + TRICK_SHOW_MS + 1).shownTrick, null);
+});
+
+test('REDEALT olayı bildirim üretir', () => {
+  let s = initialState();
+  s = reduce(s, { t: 'GAME_VIEW', seq: 1, view: view(), events: [{ type: 'REDEALT', handNo: 3 }] }, 0);
+  assert.equal(s.toasts.at(-1).key, 'game.redealt');
+  assert.ok('game.redealt' in tr);
 });
 
 test('bot düşünüyor göstergesi yeni görünümle temizlenir', () => {
@@ -117,7 +181,7 @@ test('t(): yer tutucular, eksik anahtar yedekleri, dil yedeği', () => {
   setLocale('tr-TR');
   assert.equal(t('game.hand', { n: 3, total: 20 }), 'El 3/20');
   assert.equal(t('olmayan.anahtar'), 'olmayan.anahtar');
-  assert.equal(t('game.cards', {}), '{n} kart');
+  assert.equal(t('game.usesLeft', {}), 'kalan hak: {n}');
   registerLocale('en', { 'app.title': 'King' });
   assert.equal(setLocale('en-US'), 'en');
   assert.equal(t('app.title'), 'King');

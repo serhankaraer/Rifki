@@ -50,6 +50,37 @@ export function isPenaltyCard(type, card) {
 }
 
 /**
+ * Rıfkı seçildiğinde yeniden dağıtım şartı: seçici dışındaki bir oyuncunun kupa serisi yalnızca
+ * [A], [K] ya da [A, K] ise (yani kupasında A/K dışında kart yoksa, en çok bu iki kart varsa) el yeniden dağıtılır.
+ */
+export function rifkiNeedsRedeal(hands, declarer) {
+  for (let seat = 0; seat < 4; seat++) {
+    if (seat === declarer) continue;
+    const hearts = hands[seat].filter((c) => suitOf(c) === 'H');
+    if (hearts.length >= 1 && hearts.length <= 2 && hearts.every((c) => rankSymbol(c) === 'A' || rankSymbol(c) === 'K')) return true;
+  }
+  return false;
+}
+
+/** Ceza sözleşmesinde destede toplam kaç ceza kartı var? (erken bitiş: hepsi alınınca el biter) */
+export const PENALTY_CARD_TOTAL = { RIFKI: 1, KIZ: 4, ERKEK: 8, KUPA: 13 };
+
+/** Ceza kartları görünür olan (ve erken bitebilen) sözleşmeler. */
+export const hasOpenPenaltyCards = (type) => type in PENALTY_CARD_TOTAL;
+
+/** Koltuk başına alınan ceza kartları (yalnız RIFKI/KIZ/ERKEK/KUPA; diğerlerinde boş listeler). */
+export function penaltyCardsTaken(type, takenCards) {
+  return takenCards.map((cards) => (hasOpenPenaltyCards(type) ? cards.filter((c) => isPenaltyCard(type, c)) : []));
+}
+
+/** Tüm ceza kartları alındı mı? */
+export function allPenaltyTaken(type, takenCards) {
+  if (!hasOpenPenaltyCards(type)) return false;
+  const n = penaltyCardsTaken(type, takenCards).reduce((a, l) => a + l.length, 0);
+  return n >= PENALTY_CARD_TOTAL[type];
+}
+
+/**
  * El puanlaması. takenBySeat: her koltuğun aldığı kartlar, trickWinners: 13 turun kazananları (sırayla).
  * Dönen değer: koltuk başına puan farkı (ceza = negatif).
  */

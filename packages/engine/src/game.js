@@ -1,6 +1,6 @@
 // Oyun durum makinesi. Tüm fonksiyonlar saf: girdiyi değiştirmez, yeni durum + olaylar döner.
 // Metin üretmez; olaylar ve hata kodları dilden bağımsızdır (i18n istemci tarafında).
-import { SUITS, makeDeck, sortHand, isValidCard } from './cards.js';
+import { SUITS, makeDeck, sortHand, isValidCard, suitOf } from './cards.js';
 import { createRng, shuffle } from './rng.js';
 import {
   KOZ,
@@ -9,8 +9,11 @@ import {
   selectableContracts,
   recordContract,
   scoreHand,
+  rifkiNeedsRedeal,
+  penaltyCardsTaken,
+  allPenaltyTaken,
 } from './contracts.js';
-import { legalCards, trickWinner } from './rules.js';
+import { legalCards, trickWinner, breaksHearts } from './rules.js';
 
 export const DEFAULT_CONFIG = {};
 
@@ -26,7 +29,7 @@ export class RuleError extends Error {
 const nextSeat = (s) => (s + 1) % 4;
 
 function dealHand(state, events) {
-  const rng = createRng(`${state.seed}:hand:${state.handNo}`);
+  const rng = createRng(state.redeals > 0 ? `${state.seed}:hand:${state.handNo}:redeal${state.redeals}` : `${state.seed}:hand:${state.handNo}`);
   const deck = shuffle(makeDeck(), rng);
   const hands = [0, 1, 2, 3].map((i) => sortHand(deck.slice(i * 13, i * 13 + 13)));
   if (state.handNo === 1) {
@@ -41,6 +44,7 @@ function dealHand(state, events) {
     takenCards: [[], [], [], []],
     trickHistory: [],
     heartsBroken: false,
+    trumpBroken: false,
   };
   state.phase = 'CONTRACT_SELECT';
   state.turn = state.declarer;
@@ -55,6 +59,7 @@ export function createGame({ seed, config = {} } = {}) {
     config: { ...DEFAULT_CONFIG, ...config },
     phase: 'LOBBY',
     handNo: 1,
+    redeals: 0, // bu elde kaç kez yeniden dağıtıldı
     firstDeclarer: null,
     declarer: null,
     turn: null,
@@ -88,6 +93,13 @@ export function applyCommand(prev, cmd) {
       } else if (!options.penalties.includes(cmd.contract)) {
         throw new RuleError('ILLEGAL_CONTRACT', { contract: cmd.contract });
       }
+      if (cmd.contract === 'RIFKI' && rifkiNeedsRedeal(state.hand.hands, cmd.seat)) {
+        // Sözleşme kaydedilmez; el yeniden dağıtılır ve seçici yeniden seçer
+        state.redeals += 1;
+        events.push({ type: 'REDEALT', handNo: state.handNo, reason: 'RIFKI_LONE_HEART_HONOR' });
+        dealHand(state, events);
+        break;
+      }
       recordContract(state.ledger, cmd.seat, cmd.contract);
       state.hand.contract = { type: cmd.contract, trump: cmd.contract === KOZ ? cmd.trump : null };
       state.hand.trick = { leader: state.declarer, plays: [] };
@@ -113,8 +125,11 @@ export function applyCommand(prev, cmd) {
         throw new RuleError('ILLEGAL_CARD', { card: cmd.card });
       }
       h.hands[cmd.seat] = h.hands[cmd.seat].filter((c) => c !== cmd.card);
+      if (breaksHearts(h.contract.type, h.trick.plays, cmd.card)) h.heartsBroken = true;
       h.trick.plays.push({ seat: cmd.seat, card: cmd.card });
-      if (cmd.card.endsWith('H')) h.heartsBroken = true;
+      // Koz kırılır: bir oyuncu açılan rengi olmadığı için kozla keserse
+      if (h.contract.type === KOZ && h.trick.plays.length > 1 && suitOf(h.trick.plays[0].card) !== h.contract.trump
+        && suitOf(cmd.card) === h.contract.trump) h.trumpBroken = true;
       events.push({ type: 'CARD_PLAYED', seat: cmd.seat, card: cmd.card });
 
       if (h.trick.plays.length < 4) {
@@ -130,7 +145,8 @@ export function applyCommand(prev, cmd) {
       h.trickHistory.push({ trickNo: h.trickNo, leader: h.trick.leader, plays, winner });
       events.push({ type: 'TRICK_WON', trickNo: h.trickNo, winner, plays });
 
-      if (h.trickNo < 13) {
+      const earlyEnd = h.trickNo < 13 && allPenaltyTaken(h.contract.type, h.takenCards);
+      if (h.trickNo < 13 && !earlyEnd) {
         h.trick = { leader: winner, plays: [] };
         state.turn = winner;
         break;
@@ -145,6 +161,8 @@ export function applyCommand(prev, cmd) {
         declarer: state.declarer,
         contract: { ...h.contract },
         deltas,
+        tricksPlayed: h.trickNo,
+        earlyEnd,
       });
       events.push({
         type: 'HAND_SCORED',
@@ -153,12 +171,14 @@ export function applyCommand(prev, cmd) {
         contract: { ...h.contract },
         deltas,
         scores: [...state.scores],
+        tricksPlayed: h.trickNo,
+        earlyEnd,
       });
       state.turn = null;
       if (state.handNo === STRUCTURE.hands) {
         state.phase = 'GAME_OVER';
-        const max = Math.max(...state.scores);
-        const winnersSeats = state.scores.flatMap((s, i) => (s === max ? [i] : []));
+        // Sıfırın üstünde puan alanlar kazanır
+        const winnersSeats = state.scores.flatMap((s, i) => (s > 0 ? [i] : []));
         events.push({ type: 'GAME_ENDED', scores: [...state.scores], winners: winnersSeats });
       } else {
         state.phase = 'HAND_SCORED';
@@ -169,6 +189,7 @@ export function applyCommand(prev, cmd) {
     case 'NEXT_HAND': {
       if (state.phase !== 'HAND_SCORED') throw new RuleError('WRONG_PHASE');
       state.handNo += 1;
+      state.redeals = 0;
       dealHand(state, events);
       break;
     }
@@ -206,6 +227,9 @@ export function viewFor(state, seat) {
   view.trickNo = h.trickNo;
   view.trickHistory = structuredClone(h.trickHistory);
   view.heartsBroken = h.heartsBroken;
+  view.trumpBroken = h.trumpBroken;
+  // Ceza kartları önde açık durur: herkes kimin hangi ceza kartını aldığını görür
+  view.penaltyTaken = h.contract ? penaltyCardsTaken(h.contract.type, h.takenCards) : [[], [], [], []];
 
   if (state.turn === seat) {
     if (state.phase === 'CONTRACT_SELECT') {

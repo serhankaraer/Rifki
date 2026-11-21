@@ -1,7 +1,8 @@
 // Ekranlar: ana ekran, lobi, masa. Her fonksiyon (state, ui, actions, now) alıp DOM düğümü döner.
 import { h } from './ui.js';
 import { t } from './i18n.js';
-import { SUIT_SYMBOL, SUITS, parseCard, isRed, relativePositions } from './cards.js';
+import { SUIT_SYMBOL, SUITS, parseCard, isRed, relativePositions, groupHand } from './cards.js';
+import { buildSheet, finalStandings, SHEET_CEZA_RIGHTS, SHEET_KOZ_RIGHTS } from './sheet.js';
 import { seatName, activeTrick } from './store.js';
 
 const CONTRACT_ORDER = ['RIFKI', 'KIZ', 'ERKEK', 'KUPA', 'SON_IKI', 'EL_ALMAZ'];
@@ -102,148 +103,199 @@ export function lobbyScreen(state, ui, actions) {
 }
 
 // ---------- masa ----------
-function seatPanel(state, seat, pos) {
+// Düzen kuralları (kayma olmaması için): her bölgenin boyutu sabit; bildirim/seçim/sonuç katmanları mutlak konumlu;
+// görünmesi ve kaybolması gereken her şeyin yeri baştan ayrılmıştır (visibility ile gizlenir).
+
+function cardBack(extra = '') {
+  return h('span', { class: `card back ${extra}`.trim(), 'aria-hidden': 'true' });
+}
+
+/** Açık duran ceza kartları: üst üste binen küçük yüzü açık kartlar. */
+function penaltyRow(cards, owner) {
+  return h('div', { class: 'pen-row', dataset: { penalty: owner }, 'aria-label': t('game.penaltyCards') },
+    cards.map((c) => cardFace(c, 'mini')));
+}
+
+function seatPanel(state, seat, pos, trickInfo) {
   const { view, room } = state;
   const s = room.seats[seat];
   const myTurn = view.turn === seat && (view.phase === 'PLAYING' || view.phase === 'CONTRACT_SELECT');
   const thinking = state.thinking && state.thinking.seat === seat;
   const isBot = s.kind === 'bot' || s.botControlled;
-  const ledger = view.ledger;
-  return h('div', { class: `seat-panel pos-${pos} ${myTurn ? 'turn' : ''}`, dataset: { seat } },
-    h('div', { class: 'sp-name' },
-      isBot ? '🤖 ' : '', seatName(room, seat),
-      seat === view.seat ? h('span', { class: 'chip' }, t('game.you')) : null),
-    h('div', { class: 'sp-line' },
-      h('span', { class: `score ${view.scores[seat] < 0 ? 'neg' : 'pos'}` }, view.scores[seat]),
-      h('span', { class: 'muted small' }, t('game.cards', { n: view.handSizes[seat] }))),
-    h('div', { class: 'sp-line muted small' }, t('game.rights', { koz: 2 - ledger.koz[seat], ceza: 3 - ledger.ceza[seat] })),
-    h('div', { class: 'sp-badges' },
-      seat === view.declarer ? h('span', { class: 'chip host' }, t('game.declarer')) : null,
-      s.kind === 'human' && !s.connected ? h('span', { class: 'chip warn' }, t('game.offline')) : null,
-      s.kind === 'human' && s.botControlled ? h('span', { class: 'chip' }, t('game.botControlled')) : null,
-      thinking ? h('span', { class: 'chip think' }, t('game.thinking')) : null));
+  const offline = s.kind === 'human' && !s.connected;
+  const took = trickInfo.finished && trickInfo.winner === seat;
+  const isMe = seat === view.seat;
+  const backs = isMe ? null : h('div', { class: 'backs', 'aria-label': `${view.handSizes[seat]}` },
+    Array.from({ length: view.handSizes[seat] }, () => cardBack('tiny')));
+  return h('div', { class: `seat-panel pos-${pos} ${myTurn ? 'turn' : ''} ${took ? 'took' : ''}`.trim(), dataset: { seat } },
+    h('div', { class: 'sp-name' }, h('span', { class: 'sp-label' }, seatName(room, seat))),
+    h('div', { class: 'sp-icons' },
+      h('span', { class: `ico ${isBot ? '' : 'off'}`, title: t('game.bot') }, '🤖'),
+      h('span', { class: `ico ${seat === view.declarer ? '' : 'off'}`, title: t('game.declarer') }, '★'),
+      h('span', { class: `ico ${offline ? '' : 'off'}`, title: t('game.offline') }, '📴'),
+      h('span', { class: `think ${thinking ? 'on' : ''}`, role: 'img', 'aria-label': t('game.thinking'), dataset: { thinking: thinking ? '1' : '0' } },
+        h('i'), h('i'), h('i'))),
+    backs,
+    penaltyRow(view.penaltyTaken?.[seat] ?? [], seat));
 }
 
-function trickArea(state, now) {
-  const { view, room } = state;
-  const { plays, winner, finished } = activeTrick(state, now);
+function trickArea(state, trickInfo) {
+  const { view } = state;
+  const { plays, winner, finished } = trickInfo;
   const pos = relativePositions(view.seat);
   const slot = (name) => {
     const seat = pos[name];
     const play = plays.find((p) => p.seat === seat);
-    return h('div', { class: `slot slot-${name} ${finished && winner === seat ? 'winner' : ''}` }, play ? cardFace(play.card) : null);
+    return h('div', { class: `slot slot-${name} ${finished && winner === seat ? 'winner' : ''}`.trim() }, play ? cardFace(play.card) : null);
   };
-  return h('div', { class: 'trick' }, ['top', 'left', 'right', 'bottom'].map(slot),
-    finished ? h('div', { class: 'trick-note' }, t('game.tookBy', { name: seatName(room, winner) })) : null);
+  return h('div', { class: 'trick' }, ['top', 'left', 'right', 'bottom'].map(slot));
 }
 
 function contractChooser(state, actions) {
   const sel = state.view.selectable;
   const uses = state.view.ledger.typeUses;
-  return h('div', { class: 'chooser', id: 'chooser' },
-    h('h3', null, t('game.chooseContract')),
-    h('div', { class: 'contract-grid' },
-      CONTRACT_ORDER.map((c) => {
-        const ok = sel.penalties.includes(c);
-        return h('button', { class: 'contract', dataset: { contract: c }, disabled: !ok, onClick: () => actions.chooseContract(c) },
-          h('strong', null, t(`contract.${c}`)),
-          h('span', { class: 'small' }, t(`contract.desc.${c}`)),
-          h('span', { class: 'small muted' }, t('game.usesLeft', { n: 2 - uses[c] })));
-      })),
-    h('div', { class: 'koz-row' },
-      h('div', { class: 'small muted' }, `${t('contract.KOZ')} — ${t('contract.desc.KOZ')}`),
-      h('div', { class: 'suit-buttons' },
-        SUITS.map((s) => h('button', { class: `suit-btn ${isRed(s) ? 'red' : ''}`, dataset: { trump: s }, disabled: !sel.koz, title: t(`suit.${s}`), 'aria-label': `${t('contract.KOZ')} ${t('suit.' + s)}`,
-          onClick: () => actions.chooseContract('KOZ', s) }, SUIT_SYMBOL[s])))));
+  return h('div', { class: 'overlay-in', id: 'chooser-layer' },
+    h('div', { class: 'chooser', id: 'chooser' },
+      h('h3', null, t('game.chooseContract')),
+      h('div', { class: 'contract-grid' },
+        CONTRACT_ORDER.map((c) => {
+          const ok = sel.penalties.includes(c);
+          return h('button', { class: 'contract', dataset: { contract: c }, disabled: !ok, onClick: () => actions.chooseContract(c) },
+            h('strong', null, t(`contract.${c}`)),
+            h('span', { class: 'small desc' }, t(`contract.desc.${c}`)),
+            h('span', { class: 'small muted' }, t('game.usesLeft', { n: 2 - uses[c] })));
+        })),
+      h('div', { class: 'koz-row' },
+        h('div', { class: 'small muted' }, `${t('contract.KOZ')} — ${t('contract.desc.KOZ')}`),
+        h('div', { class: 'suit-buttons' },
+          SUITS.map((s) => h('button', { class: `suit-btn ${isRed(s) ? 'red' : ''}`, dataset: { trump: s }, disabled: !sel.koz, title: t(`suit.${s}`), 'aria-label': `${t('contract.KOZ')} ${t('suit.' + s)}`,
+            onClick: () => actions.chooseContract('KOZ', s) }, SUIT_SYMBOL[s]))))));
 }
 
-function handResultCard(state) {
+function handResultLayer(state) {
   const { view, room } = state;
   const r = view.handResults[view.handResults.length - 1];
-  return h('div', { class: 'result' },
-    h('h3', null, `${t('game.handScored')} — ${contractText(r.contract)}`),
-    h('ul', null, r.deltas.map((d, i) => h('li', null, h('span', null, seatName(room, i)), h('span', { class: d < 0 ? 'neg' : 'pos' }, d > 0 ? `+${d}` : d)))),
-    view.phase === 'HAND_SCORED' ? h('p', { class: 'muted small' }, t('game.nextHandSoon')) : null);
+  return h('div', { class: 'overlay-in', id: 'hand-result-layer' },
+    h('div', { class: 'result' },
+      h('h3', null, `${t('game.handScored')} — ${contractText(r.contract)}`),
+      r.earlyEnd ? h('p', { class: 'small muted' }, t('game.earlyEnd', { n: r.tricksPlayed })) : null,
+      h('ul', null, r.deltas.map((d, i) => h('li', null, h('span', null, seatName(room, i)), h('span', { class: d < 0 ? 'neg' : 'pos' }, d > 0 ? `+${d}` : d)))),
+      view.phase === 'HAND_SCORED' ? h('p', { class: 'muted small' }, t('game.nextHandSoon')) : null));
 }
 
-function gameOverCard(state, actions) {
+function gameOverLayer(state, actions) {
   const { view, room } = state;
-  const max = Math.max(...view.scores);
-  const order = [0, 1, 2, 3].sort((a, b) => view.scores[b] - view.scores[a]);
-  return h('div', { class: 'result final', id: 'game-over' },
-    h('h3', null, t('game.gameOver')),
-    h('ol', null, order.map((i) => h('li', { class: view.scores[i] === max ? 'win' : '' },
-      h('span', null, `${view.scores[i] === max ? '🏆 ' : ''}${seatName(room, i)}`),
-      h('span', { class: view.scores[i] < 0 ? 'neg' : 'pos' }, view.scores[i])))),
-    h('button', { class: 'primary', onClick: () => actions.leave(false) }, t('game.back')));
+  const standings = finalStandings(view.scores);
+  return h('div', { class: 'overlay-in', id: 'game-over-layer' },
+    h('div', { class: 'result final', id: 'game-over' },
+      h('h3', null, t('game.gameOver')),
+      h('ol', null, standings.map(({ seat, score, won }) => h('li', { class: won ? 'win' : 'lose', dataset: { seat, result: won ? 'win' : 'lose' } },
+        h('span', { class: 'ico-result', role: 'img', 'aria-label': t(won ? 'game.won' : 'game.lost') }, won ? '🏆' : '😞'),
+        h('span', { class: 'who' }, seatName(room, seat)),
+        h('span', { class: `num ${score < 0 ? 'neg' : score > 0 ? 'pos' : ''}` }, score)))),
+      h('div', { class: 'row-btns' },
+        h('button', { id: 'final-sheet', onClick: () => actions.toggleScores() }, t('game.scores')),
+        h('button', { class: 'primary', onClick: () => actions.leave(false) }, t('game.back')))));
 }
 
-function centerArea(state, actions, now) {
+function boardLayer(state, actions, now) {
   const { view, room } = state;
-  if (view.phase === 'GAME_OVER') return gameOverCard(state, actions);
+  if (view.phase === 'GAME_OVER') return gameOverLayer(state, actions);
+  if (view.phase === 'CONTRACT_SELECT' && view.turn === view.seat) return contractChooser(state, actions);
+  if (view.phase === 'HAND_SCORED' && !(state.shownTrick && state.shownTrick.until > now)) return handResultLayer(state);
+  return null;
+}
+
+function centerContent(state, trickInfo) {
+  const { view, room } = state;
   if (view.phase === 'CONTRACT_SELECT') {
-    if (view.turn === view.seat) return h('div', { class: 'status mine' }, t('game.chooseBelow')); // seçim paneli masanın altında, tam genişlikte
-    return h('div', { class: 'status' }, t('game.chooses', { name: seatName(room, view.turn) }));
+    return h('div', { class: `status ${view.turn === view.seat ? 'mine' : ''}`.trim() },
+      view.turn === view.seat ? t('game.chooseBelow') : t('game.chooses', { name: seatName(room, view.turn) }));
   }
-  if (view.phase === 'HAND_SCORED' && !(state.shownTrick && state.shownTrick.until > now)) return handResultCard(state);
-  return trickArea(state, now);
-}
-
-function lastTrick(state) {
-  const { view, room } = state;
-  const last = view.trickHistory[view.trickHistory.length - 1];
-  if (!last || view.phase !== 'PLAYING') return null;
-  return h('div', { class: 'last-trick small muted' }, `${t('game.lastTrick')}: `,
-    last.plays.map((p) => h('span', { class: 'lt-card' }, cardFace(p.card, 'mini'))), ` → ${t('game.tookBy', { name: seatName(room, last.winner) })}`);
+  return trickArea(state, trickInfo);
 }
 
 function myHand(state, actions) {
   const { view } = state;
   const legal = new Set(view.legalCards ?? []);
   const yourTurn = view.phase === 'PLAYING' && view.turn === view.seat;
-  return h('div', { class: `hand ${yourTurn ? 'active' : ''}`, id: 'hand' },
-    view.myHand.map((c) => {
-      const ok = legal.has(c);
-      const { suit, rank } = parseCard(c);
-      return h('button', { class: `card-btn ${isRed(suit) ? 'red' : 'black'} ${ok ? 'legal' : ''}`, dataset: { card: c }, disabled: !ok,
-        'aria-label': `${rank} ${t('suit.' + suit)}`, onClick: () => actions.playCard(c) },
-        h('span', { class: 'rank' }, rank), h('span', { class: 'suit' }, SUIT_SYMBOL[suit]));
-    }));
+  return h('div', { class: `hand ${yourTurn ? 'active' : ''}`.trim(), id: 'hand' },
+    groupHand(view.myHand).map((g) => h('div', { class: 'suit-group', dataset: { suit: g.suit, n: g.cards.length } },
+      g.cards.map((c) => {
+        const ok = legal.has(c);
+        const { suit, rank } = parseCard(c);
+        return h('button', { class: `card-btn ${isRed(suit) ? 'red' : 'black'} ${ok ? 'legal' : ''}`.trim(), dataset: { card: c }, disabled: !ok,
+          'aria-label': `${rank} ${t('suit.' + suit)}`, onClick: () => actions.playCard(c) },
+          h('span', { class: 'rank' }, rank), h('span', { class: 'suit' }, SUIT_SYMBOL[suit]));
+      }))));
+}
+
+// ---------- puan cetveli ----------
+function marks(filled, total, onChar, offChar) {
+  return Array.from({ length: total }, (_, i) => (i < filled ? onChar : offChar)).join('');
+}
+
+function sheetCell(line, seat) {
+  if (!line) return h('td', { class: 'cell empty' }, '');
+  const d = line.deltas[seat];
+  return h('td', { class: `cell ${d < 0 ? 'neg' : d > 0 ? 'pos' : 'zero'} ${line.declarer === seat ? 'chooser-cell' : ''}`.trim() }, d === 0 ? '0' : d > 0 ? `+${d}` : `${d}`);
 }
 
 function scoreboard(state, actions) {
   const { view, room } = state;
-  const names = [0, 1, 2, 3].map((i) => seatName(room, i));
+  const sheet = buildSheet(view.handResults, view.ledger);
+  const seats = [0, 1, 2, 3];
+  const head = h('tr', null,
+    h('th', { class: 'label' }, t('app.title')),
+    seats.map((s) => h('th', { class: `player ${s === view.seat ? 'me' : ''}`.trim() },
+      h('div', { class: 'pname' }, seatName(room, s)),
+      h('div', { class: 'pmarks', 'aria-label': `${t('sheet.rights')}` },
+        h('span', { class: 'tri' }, marks(sheet.marks[s].ceza, SHEET_CEZA_RIGHTS, '▲', '△')),
+        h('span', { class: 'circ' }, marks(sheet.marks[s].koz, SHEET_KOZ_RIGHTS, '●', '○'))))));
+  const typeRows = sheet.rows.flatMap((row) => row.lines.map((line, i) => h('tr', { class: `type-row ${i === 1 ? 'second' : 'first'}`, dataset: { type: row.type } },
+    i === 0 ? h('th', { class: 'label', rowSpan: 2 }, t(`contract.${row.type}`), h('span', { class: 'pts' }, ` (${row.points})`)) : null,
+    seats.map((s) => sheetCell(line, s)))));
+  const kozRows = sheet.koz.map((line, i) => h('tr', { class: 'koz-row-sheet' },
+    i === 0 ? h('th', { class: 'label koz-label', rowSpan: sheet.koz.length }, t('contract.KOZ'), h('span', { class: 'pts' }, ' (+50)')) : null,
+    seats.map((s) => sheetCell(line, s))));
+  const totalRow = (key, labelKey, cls) => h('tr', { class: `total-row ${cls}` },
+    h('th', { class: 'label' }, t(labelKey)),
+    seats.map((s) => {
+      const v = sheet.totals[s][key];
+      return h('td', { class: `cell ${v < 0 ? 'neg' : v > 0 ? 'pos' : ''}`.trim(), dataset: { total: key, seat: s } }, v);
+    }));
   return h('div', { class: 'overlay', id: 'scoreboard', onClick: (e) => { if (e.target.classList.contains('overlay')) actions.toggleScores(); } },
-    h('div', { class: 'modal' },
-      h('h3', null, t('game.scores')),
-      h('div', { class: 'table-wrap' }, h('table', null,
-        h('thead', null, h('tr', null, h('th', null, t('game.col.hand')), h('th', null, t('game.col.chooser')), h('th', null, t('game.col.contract')), names.map((n) => h('th', null, n)))),
-        h('tbody', null, view.handResults.map((r) => h('tr', null,
-          h('td', null, r.handNo), h('td', null, seatName(room, r.declarer)), h('td', null, contractText(r.contract)),
-          r.deltas.map((d) => h('td', { class: d < 0 ? 'neg' : d > 0 ? 'pos' : '' }, d))))),
-        h('tfoot', null, h('tr', null, h('td', { colSpan: 3 }, t('game.total')), view.scores.map((s) => h('td', { class: s < 0 ? 'neg' : 'pos' }, s)))))),
-      h('button', { onClick: () => actions.toggleScores() }, t('game.close'))));
+    h('div', { class: 'modal sheet-modal', role: 'dialog', 'aria-label': t('game.scores') },
+      h('div', { class: 'table-wrap' },
+        h('table', { class: 'sheet' },
+          h('thead', null, head),
+          h('tbody', null, typeRows, h('tr', { class: 'gap' }, h('td', { colSpan: 5 })), kozRows),
+          h('tfoot', null,
+            totalRow('ceza', 'sheet.cezaTotal', 'sub'),
+            totalRow('koz', 'sheet.kozTotal', 'sub'),
+            totalRow('total', 'sheet.grandTotal', 'grand')))),
+      h('div', { class: 'row-btns' }, h('button', { id: 'close-sheet', onClick: () => actions.toggleScores() }, t('game.close')))));
 }
 
 export function tableScreen(state, ui, actions, now) {
   const { view, room } = state;
   const pos = relativePositions(view.seat);
+  const trickInfo = activeTrick(state, now);
   const yourTurn = view.turn === view.seat && (view.phase === 'PLAYING' || view.phase === 'CONTRACT_SELECT');
+  const turnText = yourTurn ? t('game.yourTurn') : (view.turn !== null && view.turn !== undefined ? t('game.waitingFor', { name: seatName(room, view.turn) }) : '');
   return h('main', { class: 'game' },
     connBanner(state),
     h('header', { class: 'topbar' },
       h('span', { class: 'hand-no' }, t('game.hand', { n: view.handNo, total: TOTAL_HANDS })),
-      h('span', { class: 'contract-badge', id: 'contract-badge' }, contractText(view.contract)),
-      h('span', { class: `turn-note ${yourTurn ? 'mine' : ''}` }, yourTurn ? t('game.yourTurn') : (view.turn !== null && view.turn !== undefined ? t('game.waitingFor', { name: seatName(room, view.turn) }) : '')),
+      h('span', { class: `contract-badge ${view.contract ? '' : 'idle'}`.trim(), id: 'contract-badge' }, contractText(view.contract)),
+      h('span', { class: `turn-note ${yourTurn ? 'mine' : ''}`.trim() }, turnText),
       h('button', { id: 'show-scores', class: 'small', onClick: () => actions.toggleScores() }, t('game.scores')),
       h('button', { id: 'leave', class: 'small danger', onClick: () => actions.leave(true) }, t('game.leave'))),
     h('div', { class: 'board' },
-      seatPanel(state, pos.top, 'top'), seatPanel(state, pos.left, 'left'), seatPanel(state, pos.right, 'right'),
-      h('div', { class: 'center' }, centerArea(state, actions, now)),
-      seatPanel(state, pos.bottom, 'bottom')),
-    view.phase === 'CONTRACT_SELECT' && view.turn === view.seat ? h('div', { class: 'chooser-wrap' }, contractChooser(state, actions)) : null,
-    lastTrick(state),
+      seatPanel(state, pos.top, 'top', trickInfo), seatPanel(state, pos.left, 'left', trickInfo), seatPanel(state, pos.right, 'right', trickInfo),
+      h('div', { class: 'center' }, centerContent(state, trickInfo)),
+      seatPanel(state, pos.bottom, 'bottom', trickInfo),
+      boardLayer(state, actions, now)),
     myHand(state, actions),
     ui.showScores ? scoreboard(state, actions) : null,
     toasts(state));

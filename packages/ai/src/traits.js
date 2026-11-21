@@ -18,8 +18,8 @@ export const TRAIT_KEYS = [
 export const TRAIT_MEAN = 50.5;
 export const TRAIT_SD = 20;
 
-export const MIN_THINK_MS = 2000;
-export const MAX_THINK_MS = 10000;
+export const MIN_THINK_MS = 1000;
+export const MAX_THINK_MS = 3000;
 
 export function gauss(rng) {
   const u1 = 1 - rng(); // (0, 1]
@@ -39,7 +39,7 @@ export function sampleTraits(rng) {
   return Object.fromEntries(TRAIT_KEYS.map((k) => [k, sampleTrait(rng)]));
 }
 
-/** Düşünme gecikmesi (ms): thinkSpeed 100 -> ~2 sn, 1 -> ~10 sn, ±%20 sapma, [2 sn, 10 sn] aralığında. */
+/** Düşünme gecikmesi (ms): sırası geldiğinde toplam düşünme süresi: thinkSpeed 100 -> ~1 sn, 1 -> ~3 sn, ±%20 sapma, [1 sn, 3 sn] aralığında. */
 export function thinkDelayMs(thinkSpeed, rng) {
   const base = MAX_THINK_MS - ((thinkSpeed - 1) / 99) * (MAX_THINK_MS - MIN_THINK_MS);
   const jitter = 1 + (rng() * 2 - 1) * 0.2;

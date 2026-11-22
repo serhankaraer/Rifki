@@ -19,6 +19,13 @@ function saveSession(session) {
 
 setLocale(navigator.language);
 document.title = t('app.title');
+// Oyun sırasında basılı tutunca tarayıcının bağlam menüsü / metin seçimi çıkmasın (yazı alanları hariç).
+document.addEventListener('contextmenu', (e) => {
+  if (!(e.target instanceof Element) || !e.target.closest('input, textarea')) e.preventDefault();
+});
+document.addEventListener('selectstart', (e) => {
+  if (!(e.target instanceof Element) || !e.target.closest('input, textarea, .room-code')) e.preventDefault();
+});
 
 let state = initialState(loadSession());
 const hashCode = (location.hash || '').replace('#', '').toUpperCase().slice(0, 5);
@@ -111,6 +118,13 @@ const actions = {
   toggleKing() { ui.king = !ui.king; scheduleRender(); },
   toggleTraits(seat) { ui.traitSeat = ui.traitSeat === seat ? null : seat; scheduleRender(); },
   toggleScores() { ui.showScores = !ui.showScores; scheduleRender(); },
+  /** Tam ekran: tarayıcının adres/sekme çubuklarını gizler (tablet/telefonda masa büyür). Kullanıcı dokunuşuyla çağrılmalıdır. */
+  async toggleFullscreen() {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+    } catch { /* desteklenmiyor / reddedildi: sessizce geç */ }
+  },
   async copyCode() {
     const code = state.room?.code;
     if (!code) return;

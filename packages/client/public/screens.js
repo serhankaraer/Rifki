@@ -2,7 +2,7 @@
 import { h } from './ui.js';
 import { t } from './i18n.js';
 import { SUIT_SYMBOL, SUITS, parseCard, isRed, relativePositions, groupHand } from './cards.js';
-import { buildSheet, finalStandings, certainStatus, SHEET_CEZA_RIGHTS, SHEET_KOZ_RIGHTS } from './sheet.js';
+import { buildSheet, finalStandings, certainStatus, seatOutlook, seatHandNotes, isLastHands, SHEET_CEZA_RIGHTS, SHEET_KOZ_RIGHTS } from './sheet.js';
 import { seatName, activeTrick, lastTrick, turnCountdown, revealLeft, COUNTDOWN_MS, REVEAL_MS } from './store.js';
 
 const CONTRACT_ORDER = ['RIFKI', 'KIZ', 'ERKEK', 'KUPA', 'SON_IKI', 'EL_ALMAZ'];
@@ -125,7 +125,7 @@ function tricksRow(n, owner) {
 }
 
 /** İsim satırı: bot adına tıklayınca karakter özellikleri açılır; insanın son 10 sn'sinde ismin yanında geri sayım çubuğu çıkar. */
-function seatNameRow(state, seat, actions, now) {
+function seatNameRow(state, seat, actions, now, outlook, score = null) {
   const { room } = state;
   const name = seatName(room, seat);
   const cd = turnCountdown(state, seat, now);
@@ -134,11 +134,12 @@ function seatNameRow(state, seat, actions, now) {
     : h('span', { class: 'sp-label' }, name);
   return h('div', { class: `sp-name ${cd ? 'counting' : ''}`.trim() },
     label,
+    score !== null ? h('span', { class: `sp-score ${score > 0 ? 'pos' : 'neg'}`, dataset: { score }, title: t('game.scoreOf', { n: score }) }, h('span', { class: 'lg' }, `${t('game.scoreWord')} `), `${score}`) : null,
     cd ? h('span', { class: `cd-sec ${cd.sec <= 5 ? 'hot' : ''}`.trim(), role: 'timer', 'aria-label': t('game.countdown', { sec: cd.sec }) }, t('game.secShort', { sec: cd.sec })) : null,
     cd ? h('span', { class: 'cd-bar', 'aria-hidden': 'true' }, h('i', { style: { animationDelay: `-${((COUNTDOWN_MS - cd.leftMs) / 1000).toFixed(2)}s` } })) : null);
 }
 
-function seatPanel(state, seat, pos, trickInfo, actions, now) {
+function seatPanel(state, seat, pos, trickInfo, actions, now, outlooks, handNotes) {
   const { view, room } = state;
   const s = room.seats[seat];
   const myTurn = view.turn === seat && (view.phase === 'PLAYING' || view.phase === 'CONTRACT_SELECT');
@@ -149,16 +150,34 @@ function seatPanel(state, seat, pos, trickInfo, actions, now) {
   const isMe = seat === view.seat;
   const backs = isMe ? null : h('div', { class: `backs ${pos === 'left' || pos === 'right' ? 'vert' : ''}`.trim(), 'aria-label': `${view.handSizes[seat]}` },
     Array.from({ length: view.handSizes[seat] }, () => cardBack('tiny')));
-  return h('div', { class: `seat-panel pos-${pos} ${myTurn ? 'turn' : ''} ${took ? 'took' : ''}`.trim(), dataset: { seat } },
-    seatNameRow(state, seat, actions, now),
+  const outlook = outlooks[seat];
+  const certCls = outlook.status ? `cert-${outlook.status}` : '';
+  const late = isLastHands(view.handNo);
+  const noteLines = late ? seatNoteLines(outlook, handNotes[seat]) : [];
+  const showScore = late && view.scores;
+  return h('div', { class: `seat-panel pos-${pos} ${myTurn ? 'turn' : ''} ${took ? 'took' : ''} ${certCls}`.replace(/\s+/g, ' ').trim(), dataset: { seat, ...(outlook.status ? { certain: outlook.status } : {}) } },
+    seatNameRow(state, seat, actions, now, outlook, showScore ? view.scores[seat] : null),
     h('div', { class: 'sp-icons' },
       h('span', { class: `ico ${isBot ? '' : 'off'}`, title: t('game.bot') }, '🤖'),
       h('span', { class: `ico ${seat === view.declarer ? '' : 'off'}`, title: t('game.declarer') }, '★'),
       h('span', { class: `ico ${offline ? '' : 'off'}`, title: t('game.offline') }, '📴'),
+      outlook.status ? h('span', { class: 'sp-cert', role: 'img', 'aria-label': t(outlook.status === 'win' ? 'game.certainWin' : 'game.certainLose'), title: t(outlook.status === 'win' ? 'game.certainWin' : 'game.certainLose') }, outlook.status === 'win' ? '🏆' : '😞') : null,
       h('span', { class: `think ${thinking ? 'on' : ''}`, role: 'img', 'aria-label': t('game.thinking'), dataset: { thinking: thinking ? '1' : '0' } },
         h('i'), h('i'), h('i'))),
     backs,
-    view.contract?.type === 'EL_ALMAZ' || view.contract?.type === 'KOZ' ? tricksRow(view.tricksTaken?.[seat] ?? 0, seat) : penaltyRow(view.penaltyTaken?.[seat] ?? [], seat));
+    view.contract?.type === 'EL_ALMAZ' || view.contract?.type === 'KOZ' ? tricksRow(view.tricksTaken?.[seat] ?? 0, seat) : penaltyRow(view.penaltyTaken?.[seat] ?? [], seat),
+    noteLines.length ? h('div', { class: 'sp-note' }, noteLines.map((l) => h('div', null, l))) : null);
+}
+
+/** Kesin olmayan oyuncu için durum açıklamaları: önce oynanan elin eşiği, sonra genel durum. */
+function seatNoteLines(outlook, handNote) {
+  const lines = [];
+  if (handNote?.lose) lines.push(t(`game.noteLose.${handNote.lose.type}`, { k: handNote.lose.k }));
+  if (handNote?.needKoz) lines.push(t('game.noteHandKoz', { k: handNote.needKoz }));
+  if (lines.length) return lines; // oynanan elin eşiği daha özgüldür: varsa genel durum satırı gösterilmez (yer kazanılır)
+  if (outlook.canEat !== undefined) lines.push(outlook.canEat > 0 ? t('game.noteEat', { n: outlook.canEat }) : t('game.noteEatNone'));
+  else if (outlook.needKoz) lines.push(t('game.noteNeedKoz', { n: outlook.needKoz.points, k: outlook.needKoz.tricks }));
+  return lines;
 }
 
 /** Üst çubuğun altında yeri sabit durum şeridi (boşken de yer kaplar): King ilerlemesi, koz/kupa kırıldı mı. */
@@ -166,13 +185,23 @@ function statusStrip(state) {
   const { view } = state;
   const c = view.contract;
   const items = [];
-  if (c?.king) items.push(h('span', { class: 'sx gold', id: 'king-progress' }, `👑 ${t('game.kingProgress', { n: view.tricksTaken?.[view.declarer] ?? 0 })}`));
+  if (c?.king) items.push(h('span', { class: 'sx gold lg', id: 'king-progress' }, `👑 ${t('game.kingProgress', { n: view.tricksTaken?.[view.declarer] ?? 0 })}`));
   if (c?.type === 'KOZ') {
     items.push(view.trumpBroken ? h('span', { class: 'sx green', id: 'broken-note' }, `✅ ${t('game.kozBroken')}`) : h('span', { class: 'sx amber', id: 'broken-note' }, `🔒 ${t('game.kozNotBroken')}`));
   } else if (c?.type === 'KUPA' || c?.type === 'RIFKI') {
     items.push(view.heartsBroken ? h('span', { class: 'sx green', id: 'broken-note' }, `✅ ${t('game.heartsBroken')}`) : h('span', { class: 'sx amber', id: 'broken-note' }, `🔒 ${t('game.heartsNotBroken')}`));
   }
   return h('div', { class: 'strip', id: 'status-strip', 'aria-live': 'polite' }, items);
+}
+
+/** Üst çubuktaki sözleşme rozeti. King'de geniş ekranda "King", dar ekranda alınan el sayısı (n/11) görünür. */
+function contractBadge(view) {
+  const c = view.contract;
+  if (!c) return h('span', { class: 'contract-badge idle', id: 'contract-badge' }, t('game.noContract'));
+  if (c.type !== 'KOZ' || !c.king) return h('span', { class: 'contract-badge', id: 'contract-badge' }, contractText(c));
+  const n = view.tricksTaken?.[view.declarer] ?? 0;
+  return h('span', { class: 'contract-badge', id: 'contract-badge' },
+    `${t('contract.KOZ')} ${SUIT_SYMBOL[c.trump]} 👑 `, h('span', { class: 'lg' }, t('game.king')), h('span', { class: 'sm' }, `${n}/11`));
 }
 
 /** Oyunculardan bağımsız, masanın sağ alt köşesinde hep görünen son biten tur: oynanış sırasıyla 4 kart (2×2), kazanan işaretli. */
@@ -398,20 +427,23 @@ export function tableScreen(state, ui, actions, now) {
   const pos = relativePositions(view.seat);
   const trickInfo = activeTrick(state, now);
   const yourTurn = view.turn === view.seat && (view.phase === 'PLAYING' || view.phase === 'CONTRACT_SELECT');
+  const outlooks = seatOutlook(view.handResults, view.scores, view.kingEnd);
+  const handNotes = view.phase === 'PLAYING' ? seatHandNotes(view.handResults, view.scores, view.contract, view.kingEnd, view.handNo) : view.scores.map(() => null);
   const turnText = yourTurn ? t('game.yourTurn') : (view.turn !== null && view.turn !== undefined ? t('game.waitingFor', { name: seatName(room, view.turn) }) : '');
   return h('main', { class: 'game' },
     connBanner(state),
     h('header', { class: 'topbar' },
-      h('span', { class: 'hand-no' }, t('game.hand', { n: view.handNo, total: TOTAL_HANDS })),
-      h('span', { class: `contract-badge ${view.contract ? '' : 'idle'}`.trim(), id: 'contract-badge' }, contractText(view.contract)),
+      h('span', { class: 'hand-no' }, h('span', { class: 'lg' }, `${t('game.handWord')} `), `${view.handNo}/${TOTAL_HANDS}`),
+      contractBadge(view),
+      statusStrip(state),
       h('span', { class: `turn-note ${yourTurn ? 'mine' : ''}`.trim() }, turnText),
-      h('button', { id: 'show-scores', class: 'small', onClick: () => actions.toggleScores() }, t('game.scores')),
-      h('button', { id: 'leave', class: 'small danger', onClick: () => actions.leave(true) }, t('game.leave'))),
-    statusStrip(state),
+      document.fullscreenEnabled ? h('button', { id: 'fullscreen', class: 'small', 'aria-label': t('game.fullscreen'), title: t('game.fullscreen'), onClick: () => actions.toggleFullscreen() }, '⛶') : null,
+      h('button', { id: 'show-scores', class: 'small', 'aria-label': t('game.scores'), title: t('game.scores'), onClick: () => actions.toggleScores() }, h('span', { class: 'lg' }, t('game.scores')), h('span', { class: 'sm' }, '📊')),
+      h('button', { id: 'leave', class: 'small danger', 'aria-label': t('game.leave'), title: t('game.leave'), onClick: () => actions.leave(true) }, h('span', { class: 'lg' }, t('game.leave')), h('span', { class: 'sm' }, '✕'))),
     h('div', { class: 'board' },
-      seatPanel(state, pos.top, 'top', trickInfo, actions, now), seatPanel(state, pos.left, 'left', trickInfo, actions, now), seatPanel(state, pos.right, 'right', trickInfo, actions, now),
+      seatPanel(state, pos.top, 'top', trickInfo, actions, now, outlooks, handNotes), seatPanel(state, pos.left, 'left', trickInfo, actions, now, outlooks, handNotes), seatPanel(state, pos.right, 'right', trickInfo, actions, now, outlooks, handNotes),
       h('div', { class: 'center' }, centerContent(state, trickInfo)),
-      seatPanel(state, pos.bottom, 'bottom', trickInfo, actions, now),
+      seatPanel(state, pos.bottom, 'bottom', trickInfo, actions, now, outlooks, handNotes),
       lastTrickBox(state, now),
       boardLayer(state, ui, actions, now),
       traitPopover(state, ui, actions)),

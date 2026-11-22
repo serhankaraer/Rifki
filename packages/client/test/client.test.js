@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initialState, reduce, seatName, activeTrick, nextExpiry, pruneExpired, turnCountdown, revealLeft, lastTrick, TRICK_SHOW_MS, TOAST_MS, REVEAL_MS, COUNTDOWN_MS } from '../public/store.js';
 import { relativePositions, positionOf, parseCard, isRed, groupHand } from '../public/cards.js';
-import { buildSheet, finalStandings, certainStatus } from '../public/sheet.js';
+import { buildSheet, finalStandings, certainStatus, seatOutlook, seatHandNotes, isLastHands } from '../public/sheet.js';
 import { t, setLocale, registerLocale } from '../public/i18n.js';
 import tr from '../public/locales/tr.js';
 import { ERR } from '../../server/src/protocol.js';
@@ -322,4 +322,65 @@ test('lastTrick: köşede en son biten tur; merkezde gösterilen tur varsa bir �
   assert.equal(lastTrick(s, 1500).trickNo, 1, 'biten tur merkezde görünürken köşede bir öncekisi');
   assert.equal(lastTrick(s, 1000 + TRICK_SHOW_MS + 1).trickNo, 2);
   assert.equal(lastTrick(initialState(), 0), null);
+});
+
+test('seatOutlook: tüm kozlar bittiyse kesin olmayan oyuncu kalan cezalarda en çok (puan-10) yiyebilir', () => {
+  // koz elleri bitti, Erkek 1 kez ve Son iki 2 kez kaldı (480 + 720 = 1200 ceza)
+  const hr = doneHands([...ALL_PEN.filter((x) => x !== 'ERKEK' && x !== 'SON_IKI'), ...ALL_PEN.filter((x) => x !== 'ERKEK' && x !== 'SON_IKI'), 'ERKEK', ...Array(8).fill('KOZ')]);
+  const o = seatOutlook(hr, [300, 10, 1300, -5]);
+  assert.deepEqual(o[0], { status: null, canEat: 290 });
+  assert.deepEqual(o[1], { status: null, canEat: 0 }, 'tam 10 puan: hiç yememeli');
+  assert.equal(o[2].status, 'win');
+  assert.equal(o[3].status, 'lose');
+});
+
+test('seatOutlook: tüm cezalar bittiyse kesin olmayan oyuncunun alması gereken en az koz puanı', () => {
+  const hr = doneHands([...ALL_PEN, ...ALL_PEN, ...Array(3).fill('KOZ')]); // 5 koz eli kaldı
+  const o = seatOutlook(hr, [0, -120, -250, 40]);
+  assert.deepEqual(o[0].needKoz, { points: 50, tricks: 1 });
+  assert.deepEqual(o[1].needKoz, { points: 150, tricks: 3 });
+  assert.deepEqual(o[2].needKoz, { points: 300, tricks: 6 });
+  assert.equal(o[3].status, 'win');
+  assert.equal(o[3].needKoz, undefined);
+});
+
+test('seatOutlook: ceza da koz da kalmışsa not yok; King bitince kesin durum', () => {
+  assert.deepEqual(seatOutlook([], [0, 0, 0, 0]).map((x) => Object.keys(x).join()), ['status', 'status', 'status', 'status']);
+  assert.deepEqual(seatOutlook([], [0, 0, 0, 0], { declarer: 1, success: false }).map((x) => x.status), ['win', 'lose', 'win', 'win']);
+});
+
+test('seatHandNotes: ceza elinde bu elin tamamını yese bile batmıyorsa not yok; batıyorsa en az kaç birim', () => {
+  // 2 koz eli kaldı (kalanKoz*650 = 1300 hesaba katılır) -> kimse batmaz
+  const mid = doneHands([...ALL_PEN, ...ALL_PEN.filter((x) => x !== 'KIZ'), ...Array(6).fill('KOZ')]);
+  assert.deepEqual(seatHandNotes(mid, [-1000, 50, 0, 0], { type: 'KIZ' }, null, 19), [{ lose: { type: 'KIZ', k: 3 } }, null, null, null], 'çok eksideki oyuncu 3 kızla (-1300 + 1300 <= 0) kesin batar; diğerleri tüm kızı yese de batmaz');
+  // koz kalmadı: puan 250 -> 3 kız (300) yerse ≤ 0
+  const noKoz = doneHands([...ALL_PEN, ...ALL_PEN.filter((x) => x !== 'KIZ'), ...Array(8).fill('KOZ')]);
+  const n = seatHandNotes(noKoz, [250, 400, 100, 500], { type: 'KIZ' }, null, 19);
+  assert.deepEqual(n[0], { lose: { type: 'KIZ', k: 3 } });
+  assert.deepEqual(n[1], { lose: { type: 'KIZ', k: 4 } });
+  assert.deepEqual(n[2], { lose: { type: 'KIZ', k: 1 } });
+  assert.equal(n[3], null, '500 puan 4 kızla (400) bile batmaz');
+  assert.deepEqual(seatHandNotes(noKoz, [360, 0, 0, 0], { type: 'ERKEK' }, null, 19)[0], { lose: { type: 'ERKEK', k: 6 } });
+});
+
+test('seatHandNotes: koz elinde kesin çıkmak için gereken en az koz', () => {
+  // ceza kalmadı, 2 koz eli kaldı (biri bu el)
+  const hr = doneHands([...ALL_PEN, ...ALL_PEN, ...Array(6).fill('KOZ')]);
+  const n = seatHandNotes(hr, [10, -120, 0, 700], { type: 'KOZ', trump: 'S' }, null, 19);
+  assert.equal(n[0], null, 'ceza kalmadı ve puan > 0: zaten kesin çıkar');
+  assert.deepEqual(n[1], { needKoz: 3 });
+  assert.deepEqual(n[2], { needKoz: 1 });
+  // kalan ceza 480 (Erkek bir kez): puan 20 -> 20+50k > 480 -> k = 10
+  const hr2 = doneHands([...ALL_PEN, ...ALL_PEN.filter((x) => x !== 'ERKEK'), ...Array(7).fill('KOZ')]);
+  assert.deepEqual(seatHandNotes(hr2, [20, 0, 0, 0], { type: 'KOZ' }, null, 19)[0], { needKoz: 10 });
+  assert.equal(seatHandNotes(hr2, [-300, 0, 0, 0], { type: 'KOZ' }, null, 19)[0], null, '13 elde bile kesinleşmez');
+});
+
+test('seatHandNotes: eşik notları yalnız son 4 elde (17–20) hesaplanır', () => {
+  const noKoz = doneHands([...ALL_PEN, ...ALL_PEN.filter((x) => x !== 'KIZ'), ...Array(8).fill('KOZ')]);
+  assert.deepEqual(seatHandNotes(noKoz, [250, 0, 0, 0], { type: 'KIZ' }, null, 16), [null, null, null, null]);
+  assert.deepEqual(seatHandNotes(noKoz, [250, 0, 0, 0], { type: 'KIZ' }, null, 17)[0], { lose: { type: 'KIZ', k: 3 } });
+  assert.equal(isLastHands(16), false);
+  assert.equal(isLastHands(17), true);
+  assert.equal(isLastHands(20), true);
 });

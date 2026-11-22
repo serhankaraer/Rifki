@@ -45,6 +45,11 @@ export function finalStandings(scores) {
 // Bir oyunun toplamı (zero-sum): ceza elleri toplam puanları aşağıdaki gibidir; her ceza türü 2 kez oynanır, koz eli 8 tane (en çok +650).
 export const SHEET_PENALTY_HAND_TOTAL = { RIFKI: 320, KIZ: 400, ERKEK: 480, KUPA: 390, SON_IKI: 360, EL_ALMAZ: 650 };
 export const SHEET_KOZ_HAND_MAX = 650;
+export const SHEET_TOTAL_HANDS = 20;
+export const SHEET_LAST_HANDS = 4;
+/** Masadaki puan ve eşik notları yalnız son 4 elde (17–20) gösterilir. */
+export const isLastHands = (handNo) => handNo > SHEET_TOTAL_HANDS - SHEET_LAST_HANDS;
+const SHEET_KOZ_TRICK = 50;
 
 /**
  * Oyun ortasında sonuç kesinleşti mi? Dönen: koltuk başına 'win' | 'lose' | null
@@ -53,18 +58,73 @@ export const SHEET_KOZ_HAND_MAX = 650;
  * Oynanmakta olan el de "kalan" sayılır (en kötü / en iyi durum varsayılır).
  * King ile biten oyunda sonuç kingEnd'den gelir.
  */
-export function certainStatus(handResults, scores, kingEnd = null) {
-  if (kingEnd) return [0, 1, 2, 3].map((s) => ((s === kingEnd.declarer) === kingEnd.success ? 'win' : 'lose'));
+function remainingOf(handResults) {
   let remainingPenalty = 0;
   for (const type of Object.keys(SHEET_PENALTY_HAND_TOTAL)) {
     const done = handResults.filter((r) => r.contract.type === type).length;
     remainingPenalty += Math.max(0, SHEET_USES - done) * SHEET_PENALTY_HAND_TOTAL[type];
   }
   const kozDone = handResults.filter((r) => r.contract.type === 'KOZ').length;
-  const remainingKoz = Math.max(0, SHEET_KOZ_LINES - kozDone);
+  return { remainingPenalty, remainingKoz: Math.max(0, SHEET_KOZ_LINES - kozDone) };
+}
+
+export function certainStatus(handResults, scores, kingEnd = null) {
+  if (kingEnd) return [0, 1, 2, 3].map((s) => ((s === kingEnd.declarer) === kingEnd.success ? 'win' : 'lose'));
+  const { remainingPenalty, remainingKoz } = remainingOf(handResults);
   return scores.map((sc) => {
     if (sc - remainingPenalty > 0) return 'win';
     if (sc + remainingKoz * SHEET_KOZ_HAND_MAX <= 0) return 'lose';
     return null;
+  });
+}
+
+/**
+ * Masada oyuncu başına durum: { status: 'win'|'lose'|null, canEat?, needKoz? }
+ *  - kesin olmayan oyuncu, tüm koz elleri bittiğinde: canEat = kalan cezalarda çıkmak için yiyebileceği en çok puan (puanlar 10'un katıdır)
+ *  - kesin olmayan oyuncu, tüm cezalar bittiğinde: needKoz = çıkmak için kalan kozlarda alması gereken en az puan / el (her el +50)
+ */
+export function seatOutlook(handResults, scores, kingEnd = null) {
+  const status = certainStatus(handResults, scores, kingEnd);
+  const { remainingPenalty, remainingKoz } = remainingOf(handResults);
+  return scores.map((sc, i) => {
+    if (status[i] || kingEnd) return { status: status[i] };
+    if (remainingKoz === 0) return { status: null, canEat: sc - 10 };
+    if (remainingPenalty === 0) {
+      const tricks = Math.floor(-sc / 50) + 1;
+      return { status: null, needKoz: { points: tricks * 50, tricks } };
+    }
+    return { status: null };
+  });
+}
+
+// ---- Oynanan el için eşikler (masada gösterilir) ----
+// Ceza birimi: kart/el başına puan ve elde toplam birim sayısı (engine POINTS / PENALTY_CARD_TOTAL ile aynı).
+export const SHEET_UNIT = {
+  RIFKI: { pts: 320, total: 1 }, KIZ: { pts: 100, total: 4 }, ERKEK: { pts: 60, total: 8 },
+  KUPA: { pts: 30, total: 13 }, SON_IKI: { pts: 180, total: 2 }, EL_ALMAZ: { pts: 50, total: 13 },
+};
+
+/**
+ * Oynanmakta olan el için koltuk başına eşik notu (yalnız son 4 elde; kesin çıkan/batan oyuncularda null):
+ *  - Ceza elinde: bu elin cezasının TAMAMINI yese bile batması kesinleşmiyorsa null; kesinleşiyorsa en az kaç birim yiyince
+ *    kesin batar -> { lose: { type, k } }   (kalan koz ellerinin en iyi durumu sayılır: puan - k*birim + kalanKoz*650 <= 0)
+ *  - Koz elinde: kesin çıkmak için bu elde en az kaç koz (el) alması gerekir -> { needKoz: k }
+ *    (kalan tüm cezaların en kötü durumu sayılır: puan + 50*k - kalanCeza > 0; 13'ü aşıyorsa null)
+ */
+export function seatHandNotes(handResults, scores, contract, kingEnd = null, handNo = 0) {
+  const none = scores.map(() => null);
+  if (!contract || kingEnd || !isLastHands(handNo)) return none;
+  const status = certainStatus(handResults, scores, null);
+  const { remainingPenalty, remainingKoz } = remainingOf(handResults);
+  return scores.map((sc, i) => {
+    if (status[i]) return null;
+    if (contract.type === 'KOZ') {
+      const k = Math.floor((remainingPenalty - sc) / SHEET_KOZ_TRICK) + 1;
+      return k >= 1 && k <= 13 ? { needKoz: k } : null;
+    }
+    const u = SHEET_UNIT[contract.type];
+    if (!u) return null;
+    const k = Math.max(1, Math.ceil((sc + remainingKoz * SHEET_KOZ_HAND_MAX) / u.pts));
+    return k <= u.total ? { lose: { type: contract.type, k } } : null;
   });
 }

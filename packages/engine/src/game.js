@@ -9,13 +9,16 @@ import {
   selectableContracts,
   recordContract,
   scoreHand,
-  rifkiNeedsRedeal,
+  rifkiRedealSeats,
   penaltyCardsTaken,
   allPenaltyTaken,
 } from './contracts.js';
 import { legalCards, trickWinner, breaksHearts, advanceTrumpRun } from './rules.js';
 
 export const DEFAULT_CONFIG = {};
+
+/** King: koz sahibi 11+ el alırsa oyun biter. */
+export const KING_TARGET = 11;
 
 export class RuleError extends Error {
   constructor(code, detail = {}) {
@@ -94,15 +97,21 @@ export function applyCommand(prev, cmd) {
       } else if (!options.penalties.includes(cmd.contract)) {
         throw new RuleError('ILLEGAL_CONTRACT', { contract: cmd.contract });
       }
-      if (cmd.contract === 'RIFKI' && rifkiNeedsRedeal(state.hand.hands, cmd.seat)) {
-        // Sözleşme kaydedilmez; el yeniden dağıtılır ve seçici yeniden seçer
+      if (cmd.king !== undefined && cmd.king !== false && cmd.king !== true) throw new RuleError('ILLEGAL_CONTRACT', { contract: cmd.contract });
+      if (cmd.king && cmd.contract !== KOZ) throw new RuleError('ILLEGAL_CONTRACT', { contract: cmd.contract });
+      const redealSeats = cmd.contract === 'RIFKI' ? rifkiRedealSeats(state.hand.hands, cmd.seat) : [];
+      if (redealSeats.length) {
+        // Sözleşme kaydedilmez; el yeniden dağıtılır ve seçici yeniden seçer.
+        // Tetikleyen oyuncuların (eski) elleri herkese açılır.
+        const reveals = redealSeats.map((seat) => ({ seat, hand: [...state.hand.hands[seat]] }));
         state.redeals += 1;
-        events.push({ type: 'REDEALT', handNo: state.handNo, reason: 'RIFKI_LONE_HEART_HONOR' });
+        events.push({ type: 'REDEALT', handNo: state.handNo, reason: 'RIFKI_LONE_HEART_HONOR', declarer: cmd.seat, reveals });
         dealHand(state, events);
         break;
       }
       recordContract(state.ledger, cmd.seat, cmd.contract);
       state.hand.contract = { type: cmd.contract, trump: cmd.contract === KOZ ? cmd.trump : null };
+      if (cmd.king) state.hand.contract.king = true;
       state.hand.trick = { leader: state.declarer, plays: [] };
       state.phase = 'PLAYING';
       state.turn = state.declarer;
@@ -111,6 +120,7 @@ export function applyCommand(prev, cmd) {
         seat: cmd.seat,
         contract: cmd.contract,
         trump: state.hand.contract.trump,
+        ...(cmd.king ? { king: true } : {}),
       });
       break;
     }
@@ -146,6 +156,22 @@ export function applyCommand(prev, cmd) {
       for (const p of plays) h.takenCards[winner].push(p.card);
       h.trickHistory.push({ trickNo: h.trickNo, leader: h.trick.leader, plays, winner });
       events.push({ type: 'TRICK_WON', trickNo: h.trickNo, winner, plays });
+
+      if (h.contract.king) {
+        const mine = h.takenCards[state.declarer].length / 4;
+        const lost = h.trickNo - mine;
+        const success = mine >= KING_TARGET;
+        if (success || lost > 13 - KING_TARGET) {
+          // King biter oyunu: başarılıysa yalnız seçici çıkar, başarısızsa yalnız seçici batar. Puanlar önemsizdir.
+          state.phase = 'GAME_OVER';
+          state.turn = null;
+          state.kingEnd = { declarer: state.declarer, success, handNo: state.handNo, tricks: mine, tricksPlayed: h.trickNo };
+          const winnersSeats = [0, 1, 2, 3].filter((s) => (s === state.declarer) === success);
+          events.push({ type: 'KING_ENDED', ...state.kingEnd });
+          events.push({ type: 'GAME_ENDED', scores: [...state.scores], winners: winnersSeats, king: true });
+          break;
+        }
+      }
 
       const earlyEnd = h.trickNo < 13 && allPenaltyTaken(h.contract.type, h.takenCards);
       if (h.trickNo < 13 && !earlyEnd) {
@@ -218,6 +244,7 @@ export function viewFor(state, seat) {
     ledger: structuredClone(state.ledger),
     handResults: structuredClone(state.handResults),
     config: { ...state.config },
+    kingEnd: state.kingEnd ? { ...state.kingEnd } : null,
   };
   const h = state.hand;
   if (!h) return view;

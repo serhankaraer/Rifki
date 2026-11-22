@@ -22,7 +22,7 @@ document.title = t('app.title');
 
 let state = initialState(loadSession());
 const hashCode = (location.hash || '').replace('#', '').toUpperCase().slice(0, 5);
-const ui = { form: { nickname: localStorage.getItem('rifki.nick') || '', code: /^[A-Z0-9]{5}$/.test(hashCode) ? hashCode : '' }, showScores: false, copied: false };
+const ui = { form: { nickname: localStorage.getItem('rifki.nick') || '', code: /^[A-Z0-9]{5}$/.test(hashCode) ? hashCode : '' }, showScores: false, copied: false, king: false, traitSeat: null };
 
 let tickTimer = null;
 let renderQueued = false;
@@ -38,7 +38,7 @@ function dispatch(msg) {
   const prevSession = state.session;
   state = reduce(state, msg, Date.now());
   if (state.session !== prevSession) saveSession(state.session);
-  if (msg.t === 'LEFT_ROOM' || (msg.t === 'ERROR' && msg.code === 'INVALID_TOKEN')) ui.showScores = false;
+  if (msg.t === 'LEFT_ROOM' || (msg.t === 'ERROR' && msg.code === 'INVALID_TOKEN')) { ui.showScores = false; ui.traitSeat = null; ui.king = false; }
   if (state.fatal) net.stop();
   scheduleRender();
   scheduleTick();
@@ -103,7 +103,13 @@ const actions = {
     net.send({ t: 'LEAVE_ROOM' });
   },
   playCard(card) { net.send({ t: 'PLAY_CARD', card }); },
-  chooseContract(contract, trump) { net.send({ t: 'CHOOSE_CONTRACT', contract, ...(trump ? { trump } : {}) }); },
+  chooseContract(contract, trump) {
+    const king = contract === 'KOZ' && ui.king;
+    ui.king = false;
+    net.send({ t: 'CHOOSE_CONTRACT', contract, ...(trump ? { trump } : {}), ...(king ? { king: true } : {}) });
+  },
+  toggleKing() { ui.king = !ui.king; scheduleRender(); },
+  toggleTraits(seat) { ui.traitSeat = ui.traitSeat === seat ? null : seat; scheduleRender(); },
   toggleScores() { ui.showScores = !ui.showScores; scheduleRender(); },
   async copyCode() {
     const code = state.room?.code;

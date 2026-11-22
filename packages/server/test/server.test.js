@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { viewFor, makeDeck } from '@rifki/engine';
 import { createHarness, createRoom } from './helpers.js';
 
 const room = (h, code) => h.server.rooms.get(code);
@@ -333,4 +334,140 @@ test('aynı token ile ikinci bağlantı eskisini düşürür (SESSION_REPLACED)'
   assert.equal(fresh.last('ROOM_JOINED').resumed, true);
   old.send({ t: 'PLAY_CARD', card: '2C' });
   assert.equal(old.error, 'NOT_IN_ROOM');
+});
+
+// ---------- süre sınırı, yedek bot, tek kart, Rıfkı bekleme ----------
+function toMyTurn(h, r, maxMs = 120000) {
+  for (let t = 0; t < maxMs; t += 250) {
+    const st = room(h, r.code).state;
+    if (st.turn === r.host.seat && (st.phase === 'CONTRACT_SELECT' || st.phase === 'PLAYING')) return true;
+    h.scheduler.advance(250);
+  }
+  return false;
+}
+const progress = (st) => JSON.stringify([st.handNo, st.redeals, st.hand.trickNo, st.hand.trick.plays.length, st.phase]);
+
+test('insan 30 sn içinde oynamazsa yerine bot oynar; süre sayacı istemciye bildirilir', () => {
+  const h = createHarness();
+  const r = startSolo(h);
+  assert.ok(toMyTurn(h, r), 'insan sırası geldi');
+  const before = progress(room(h, r.code).state);
+  const me = r.host.seat;
+  const tt = r.host.last('TURN_TIMER');
+  assert.equal(tt.seat, me);
+  assert.equal(tt.ms, 30000);
+  h.scheduler.advance(29_000);
+  assert.equal(progress(room(h, r.code).state), before, '30 sn dolmadan hamle yok');
+  r.host.clear();
+  h.scheduler.advance(1_000);
+  assert.ok(r.host.all('SEAT_EVENT').some((e) => e.event === 'TIMEOUT_PLAY' && e.seat === me));
+  assert.notEqual(progress(room(h, r.code).state), before, 'yedek bot hamle yaptı');
+});
+
+test('insan zamanında oynarsa o hamle için yedek bot devreye girmez; yeni sıra yeni 30 sn verir', () => {
+  const h = createHarness();
+  const r = startSolo(h);
+  assert.ok(toMyTurn(h, r));
+  h.scheduler.advance(10_000);
+  h.autoPlay(r.host);
+  r.host.clear();
+  h.scheduler.advance(25_000); // eski sayaç (30 sn) dolmuş olurdu
+  assert.ok(!r.host.all('SEAT_EVENT').some((e) => e.event === 'TIMEOUT_PLAY'), 'eski sayaç iptal edildi');
+});
+
+test('süre sayacı: dönen oyuncuya kalan süre iletilir', () => {
+  const h = createHarness();
+  const r = startSolo(h);
+  assert.ok(toMyTurn(h, r));
+  h.scheduler.advance(12_000);
+  const me = r.host.seat; const token = r.host.token;
+  r.host.close();
+  const back = h.connect();
+  back.send({ t: 'RESUME', token });
+  const tt = back.last('TURN_TIMER');
+  assert.equal(tt.seat, me);
+  assert.equal(tt.ms, 18_000);
+});
+
+test('yedek bot profili: en yüksek puanlı bot; eşitlikte rastgele; botsuz odada varsayılan özellikler', () => {
+  const h = createHarness();
+  const r = startSolo(h);
+  const rm = room(h, r.code);
+  rm.state.scores = [900, 100, 300, -50]; // insan önde olsa da yalnız botlar sayılır
+  assert.equal(rm.substituteProfile().id, rm.seats[2].profile.id);
+  rm.state.scores = [0, 100, 100, 100];
+  const seen = new Set();
+  for (let i = 0; i < 40; i++) seen.add(rm.substituteProfile().id);
+  assert.equal(seen.size, 3, 'eşit botlar arasında rastgele');
+  rm.state.scores = [0, 100, 100, 50];
+  const two = new Set();
+  for (let i = 0; i < 40; i++) two.add(rm.substituteProfile().id);
+  assert.deepEqual([...two].sort(), [rm.seats[1].profile.id, rm.seats[2].profile.id].sort());
+  const h2 = createHarness();
+  const r2 = createRoom(h2, ['A', 'B', 'C', 'D']);
+  r2.host.send({ t: 'START_GAME' });
+  const p = room(h2, r2.code).substituteProfile();
+  assert.ok(Object.values(p.traits).every((v) => v === 50), 'botsuz odada varsayılan özellikler');
+});
+
+test("yasal tek kartı olan bot 1 sn'de oynar (düşünme süresini ezer); diğer hamleler 1-3 sn", () => {
+  const h = createHarness();
+  const r = startSolo(h);
+  let single = 0; let other = 0; let seen = 0;
+  for (let step = 0; step < 6000 && (single < 4 || other < 4); step++) {
+    h.autoPlay(r.host);
+    const msgs = r.host.all('BOT_THINKING');
+    if (msgs.length > seen) {
+      seen = msgs.length;
+      const m = msgs.at(-1);
+      const rm = room(h, r.code);
+      if (rm.state.turn === m.seat && rm.state.phase === 'PLAYING') {
+        const n = viewFor(rm.state, m.seat).legalCards.length;
+        if (n === 1) { assert.equal(m.delayMs, 1000); single++; } else { assert.ok(m.delayMs >= 1000 && m.delayMs <= 3000); other++; }
+      }
+    }
+    h.scheduler.advance(250);
+  }
+  assert.ok(single >= 4, `tek kartlı durum görüldü (${single})`);
+});
+
+test('Rıfkı el bozulunca: olayda tetikleyenlerin elleri açılır; seçici 10 sn sonra başlayan 30 sn alır', () => {
+  const h = createHarness();
+  const r = startSolo(h);
+  const rm = room(h, r.code);
+  const me = r.host.seat;
+  const st = rm.state;
+  st.handNo = 3; st.firstDeclarer = (me + 2) % 4; st.declarer = me; st.turn = me; st.phase = 'CONTRACT_SELECT'; st.redeals = 0;
+  const others = [0, 1, 2, 3].filter((x) => x !== me);
+  const deck = makeDeck().filter((c) => !c.endsWith('H'));
+  const hands = [[], [], [], []];
+  const hearts = makeDeck().filter((c) => c.endsWith('H'));
+  hands[others[0]] = [...deck.slice(0, 12), 'AH'];
+  hands[others[1]] = [...deck.slice(12, 24), 'KH'];
+  hands[others[2]] = [...deck.slice(24, 36), hearts[0]];
+  hands[me] = [...deck.slice(36, 39), ...hearts.slice(1, 11)];
+  st.hand = { ...st.hand, hands, contract: null, trick: { leader: null, plays: [] }, trickNo: 0, takenCards: [[], [], [], []], trickHistory: [] };
+  rm.clearTimer(); rm.turnInfo = null;
+  rm.schedule();
+  r.host.clear();
+  r.host.send({ t: 'CHOOSE_CONTRACT', contract: 'RIFKI' });
+  const gv = r.host.last('GAME_VIEW');
+  const ev = gv.events.find((e) => e.type === 'REDEALT');
+  assert.ok(ev, 'REDEALT olayı');
+  assert.deepEqual(ev.reveals.map((x) => x.seat), [others[0], others[1]]);
+  assert.equal(r.host.last('TURN_TIMER').ms, 40_000);
+});
+
+test('King: komut sunucudan motora iletilir; geçersiz king değeri reddedilir', () => {
+  const h = createHarness();
+  const r = startSolo(h);
+  const rm = room(h, r.code);
+  const me = r.host.seat;
+  const st = rm.state;
+  st.handNo = 5; st.firstDeclarer = me; st.declarer = me; st.turn = me;
+  rm.clearTimer(); rm.turnInfo = null; rm.schedule();
+  r.host.send({ t: 'CHOOSE_CONTRACT', contract: 'KOZ', trump: 'S', king: 'evet' });
+  assert.equal(r.host.error, 'BAD_MESSAGE');
+  r.host.send({ t: 'CHOOSE_CONTRACT', contract: 'KOZ', trump: 'S', king: true });
+  assert.equal(r.host.view.contract.king, true);
 });

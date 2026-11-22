@@ -1,7 +1,7 @@
 // Oda: koltuklar, lobi, oyun oturumu, bot zamanlaması, bağlantı kopma / bot devralma.
 // Taşıma (WebSocket) ve zamanlayıcı dışarıdan verilir (ctx) -> tamamen test edilebilir.
 import { createGame, applyCommand, viewFor, RuleError } from '@rifki/engine';
-import { createBot, createBotProfiles } from '@rifki/ai';
+import { createBot, createBotProfiles, TRAIT_KEYS } from '@rifki/ai';
 import { S2C, ERR, ServerError, nickKey } from './protocol.js';
 
 const SEATS = 4;
@@ -21,6 +21,9 @@ export class Room {
     this.seq = 0;
     this.timer = null;
     this.timerKey = null;
+    this.turnInfo = null;     // { seat, endsAt } insan hamle süresi
+    this.pendingPause = 0;    // bir sonraki zamanlayıcıya eklenecek ek bekleme (Rıfkı el açma)
+    this.subCounter = 0;
     this.idleTimer = null;
     this.finishTimer = null;
     this.destroyed = false;
@@ -100,7 +103,10 @@ export class Room {
     this.refreshIdle();
     this.broadcastState();
     this.seatEvent('RECONNECTED', seat, { botControlled: m.control === 'bot' });
-    if (this.state) this.sendView(seat);
+    if (this.state) {
+      this.sendView(seat);
+      this.sendTurnTimer(connId);
+    }
     this.schedule(); // oda boştaydı ve duraklatılmışsa devam eder
   }
 
@@ -231,6 +237,7 @@ export class Room {
     this.state = result.state;
     this.commandLog.push(cmd);
     if (result.events.some((e) => e.type === 'HAND_DEALT')) this.returnControl();
+    if (result.events.some((e) => e.type === 'REDEALT')) this.pendingPause = this.cfg.redealPauseMs;
     if (result.events.some((e) => e.type === 'GAME_ENDED')) {
       this.phase = 'FINISHED';
       this.broadcastState();
@@ -277,18 +284,41 @@ export class Room {
       }, fast ? 0 : this.cfg.handPauseMs);
       return;
     }
-    if (st.phase !== 'CONTRACT_SELECT' && st.phase !== 'PLAYING') return;
+    if (st.phase !== 'CONTRACT_SELECT' && st.phase !== 'PLAYING') { this.clearTimer(); this.turnInfo = null; return; }
 
     const seat = st.turn;
-    if (!this.isBotControlled(seat)) { this.clearTimer(); return; }
-    const key = `${st.handNo}:${st.phase}:${st.hand.trickNo}:${st.hand.trick.plays.length}:${seat}`;
+    const key = `${st.handNo}:${st.phase}:${st.redeals}:${st.hand.trickNo}:${st.hand.trick.plays.length}:${seat}`;
     if (this.timerKey === key) return;
+    const pause = fast ? 0 : this.pendingPause;
+
+    if (!this.isBotControlled(seat)) {
+      this.clearTimer();
+      this.turnInfo = null;
+      const m = this.seats[seat];
+      if (!m || m.connId === null) return; // bağlantısı kopmuş: devralma zamanlayıcısı çalışır
+      const ms = pause + this.cfg.turnMs;
+      this.pendingPause = 0;
+      this.timerKey = key;
+      this.turnInfo = { seat, endsAt: this.ctx.now() + ms };
+      this.timer = this.ctx.scheduler.setTimeout(() => {
+        this.timer = null; this.timerKey = null; this.turnInfo = null;
+        this.substituteMove(seat);
+      }, ms);
+      this.sendTurnTimer();
+      return;
+    }
     this.clearTimer();
+    this.turnInfo = null;
 
     const m = this.seats[seat];
     const bot = m.bot;
-    const cmd = bot.act(viewFor(st, seat));
-    const delay = fast ? 0 : Math.round(bot.thinkDelayMs() * this.cfg.thinkDelayScale);
+    const view = viewFor(st, seat);
+    const cmd = bot.act(view);
+    // Yasal tek kartı olan bot 1 sn'de oynar (düşünme süresini ezer)
+    const single = st.phase === 'PLAYING' && view.legalCards?.length === 1;
+    const think = single ? Math.round(this.cfg.singleCardMs * this.cfg.thinkDelayScale) : Math.round(bot.thinkDelayMs() * this.cfg.thinkDelayScale);
+    const delay = fast ? 0 : Math.max(think, pause);
+    this.pendingPause = 0;
     this.broadcast({ t: S2C.BOT_THINKING, seat, delayMs: delay });
     this.timerKey = key;
     this.timer = this.ctx.scheduler.setTimeout(() => {
@@ -300,6 +330,41 @@ export class Room {
         this.fallbackMove(seat);
       }
     }, delay);
+  }
+
+  sendTurnTimer(connId = null) {
+    const t = this.turnInfo;
+    if (!t) return;
+    const msg = { t: S2C.TURN_TIMER, seat: t.seat, ms: Math.max(0, t.endsAt - this.ctx.now()) };
+    if (connId !== null) this.send(connId, msg);
+    else this.broadcast(msg);
+  }
+
+  /** Süresi biten insan oyuncunun yerine, oyundaki en yüksek puanlı botun karakteriyle bir hamle yapılır. */
+  substituteProfile() {
+    const bots = this.seats.flatMap((m, i) => (m && m.kind === 'bot' ? [i] : []));
+    if (bots.length === 0) {
+      return { id: 'sub', name: 'sub', gender: 'm', traits: Object.fromEntries(TRAIT_KEYS.map((k) => [k, 50])) };
+    }
+    const top = Math.max(...bots.map((i) => this.state.scores[i]));
+    const tied = bots.filter((i) => this.state.scores[i] === top);
+    const pick = tied[tied.length === 1 ? 0 : this.ctx.random.int(tied.length)];
+    return this.seats[pick].profile;
+  }
+
+  substituteMove(seat) {
+    if (this.destroyed || this.phase !== 'PLAYING' || !this.state || this.state.turn !== seat) return;
+    if (this.isBotControlled(seat)) return;
+    const profile = this.substituteProfile();
+    const bot = createBot({ profile, seed: `${this.seedBase}:sub:${this.subCounter++}`, simsScale: this.cfg.simsScale });
+    const cmd = bot.act(viewFor(this.state, seat));
+    this.seatEvent('TIMEOUT_PLAY', seat);
+    try {
+      this.applyEngine(cmd);
+    } catch (e) {
+      this.ctx.log?.('yedek bot komutu reddedildi', e);
+      this.fallbackMove(seat);
+    }
   }
 
   // Bot beklenmedik bir şekilde yasadışı komut verirse oyun kilitlenmesin

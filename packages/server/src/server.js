@@ -7,6 +7,9 @@ import {
 
 export const DEFAULT_CONFIG = {
   takeoverMs: 30_000,        // bağlantısı kopan oyuncu için bekleme, sonra bot devralır
+  turnMs: 30_000,            // insan oyuncunun hamle süresi; dolunca yerine bot oynar
+  redealPauseMs: 10_000,     // Rıfkı'da el bozulunca kartların açık kaldığı süre (bu sürede bot seçim yapmaz)
+  singleCardMs: 1_000,       // yasal tek kartı olan botun oynama süresi (düşünme süresini ezer)
   handPauseMs: 6_000,        // el bitince sonraki ele geçmeden önce bekleme (puanları göstermek için)
   idleRoomMs: 5 * 60_000,    // hiç bağlı insan kalmayan oda ne kadar yaşar (bu sürede botlar oyunu hızla bitirir)
   finishedRoomMs: 5 * 60_000,// biten oyunun odası ne kadar yaşar
@@ -22,6 +25,7 @@ export function createGameServer({ send, close, scheduler, random, config = {}, 
 
   const ctx = {
     cfg, scheduler, random, log, close,
+    now: () => (typeof scheduler.now === 'number' ? scheduler.now : Date.now()),
     send: (connId, msg) => send(connId, msg),
     registerToken: (token, room) => tokens.set(token, room),
     unregisterToken: (token) => tokens.delete(token),
@@ -93,7 +97,8 @@ export function createGameServer({ send, close, scheduler, random, config = {}, 
         return;
       case C2S.CHOOSE_CONTRACT: {
         if (!isString(msg.contract) || (msg.trump !== undefined && !isString(msg.trump))) throw new ServerError(ERR.BAD_MESSAGE);
-        roomOf(connId).command(connId, { type: 'CHOOSE_CONTRACT', contract: msg.contract, trump: msg.trump });
+        if (msg.king !== undefined && typeof msg.king !== 'boolean') throw new ServerError(ERR.BAD_MESSAGE);
+        roomOf(connId).command(connId, { type: 'CHOOSE_CONTRACT', contract: msg.contract, trump: msg.trump, ...(msg.king ? { king: true } : {}) });
         return;
       }
       case C2S.PLAY_CARD: {

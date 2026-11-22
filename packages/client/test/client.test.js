@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { initialState, reduce, seatName, activeTrick, nextExpiry, pruneExpired, TRICK_SHOW_MS, TOAST_MS } from '../public/store.js';
+import { initialState, reduce, seatName, activeTrick, nextExpiry, pruneExpired, turnCountdown, revealLeft, lastTrick, TRICK_SHOW_MS, TOAST_MS, REVEAL_MS, COUNTDOWN_MS } from '../public/store.js';
 import { relativePositions, positionOf, parseCard, isRed, groupHand } from '../public/cards.js';
-import { buildSheet, finalStandings } from '../public/sheet.js';
+import { buildSheet, finalStandings, certainStatus } from '../public/sheet.js';
 import { t, setLocale, registerLocale } from '../public/i18n.js';
 import tr from '../public/locales/tr.js';
 import { ERR } from '../../server/src/protocol.js';
@@ -197,11 +197,13 @@ test('çeviri anahtarı kapsamı: kodda kullanılan her anahtar ve her dinamik a
   for (const s of ['C', 'D', 'H', 'S']) assert.ok(`suit.${s}` in tr);
   for (const c of ['KOZ', 'RIFKI', 'KIZ', 'ERKEK', 'KUPA', 'SON_IKI', 'EL_ALMAZ']) { assert.ok(`contract.${c}` in tr); assert.ok(`contract.desc.${c}` in tr); }
   for (const k of ['risk', 'tracking', 'inference', 'lookahead', 'handEval', 'scoreAwareness', 'aggression', 'consistency', 'thinkSpeed']) assert.ok(`trait.${k}` in tr);
-  for (const e of ['DISCONNECTED', 'RECONNECTED', 'BOT_TOOK_OVER', 'CONTROL_RETURNED', 'LEFT']) assert.ok(`seat.event.${e}` in tr);
+  for (const e of ['DISCONNECTED', 'RECONNECTED', 'BOT_TOOK_OVER', 'CONTROL_RETURNED', 'LEFT', 'TIMEOUT_PLAY']) assert.ok(`seat.event.${e}` in tr);
   for (const code of [...Object.values(ERR), 'NOT_YOUR_TURN', 'WRONG_PHASE', 'ILLEGAL_CONTRACT', 'INVALID_TRUMP', 'CARD_NOT_IN_HAND', 'ILLEGAL_CARD', 'INTERNAL']) {
     assert.ok(`error.${code}` in tr, `eksik hata metni: ${code}`);
   }
   assert.ok('conn.fatal.SESSION_REPLACED' in tr);
+  for (const k of ['A', 'K', 'AK']) assert.ok(`game.redealWhat.${k}` in tr);
+  assert.ok(!/Kral/.test(JSON.stringify(tr)), 'King çevrilmez');
 });
 
 test('güvenlik: istemci kodunda innerHTML/eval/satır içi stil yok (CSP ile uyumlu)', () => {
@@ -250,4 +252,74 @@ test('net: bağlanınca token varsa RESUME gönderir; kopunca yeniden bağlanır
   assert.equal(b.sent.length, 0, 'token yoksa RESUME yok');
   assert.equal(status.at(-1), 'open');
   net.stop();
+});
+
+// ---------- kesin çıkar / kesin batar ----------
+const doneHands = (types) => types.map((type) => ({ contract: { type } }));
+const ALL_PEN = ['RIFKI', 'KIZ', 'ERKEK', 'KUPA', 'SON_IKI', 'EL_ALMAZ'];
+
+test('certainStatus: oyun başında kimse kesin değil', () => {
+  assert.deepEqual(certainStatus([], [0, 0, 0, 0]), [null, null, null, null]);
+});
+
+test('certainStatus: kalan tüm cezayı yese bile pozitifse kesin çıkar; kalan tüm kozu alsa bile ≤ 0 ise kesin batar', () => {
+  // 12 ceza elinin hepsi + 7 koz oynandı; kalan: 1 koz eli (en çok +650), ceza kalmadı
+  const hr = doneHands([...ALL_PEN, ...ALL_PEN, ...Array(7).fill('KOZ')]);
+  assert.deepEqual(certainStatus(hr, [10, 0, -650, -651]), ['win', null, 'lose', 'lose']);
+});
+
+test('certainStatus: sınır değerleri — tam sıfır kazanç değildir', () => {
+  const hr = doneHands([...ALL_PEN, ...ALL_PEN, ...Array(8).fill('KOZ')]); // oyun bitti
+  assert.deepEqual(certainStatus(hr, [1, 0, -1, 500]), ['win', 'lose', 'lose', 'win']);
+  // oyun ortası: Erkek almaz 1 kez, Son iki 0 kez oynanmış -> kalan ceza = 480 + 2*360 + (diğerleri tam)
+  const mid = doneHands([...ALL_PEN.filter((x) => x !== 'ERKEK' && x !== 'SON_IKI'), ...ALL_PEN.filter((x) => x !== 'ERKEK' && x !== 'SON_IKI'), 'ERKEK', ...Array(8).fill('KOZ')]);
+  const remaining = 480 + 2 * 360;
+  assert.equal(certainStatus(mid, [remaining + 1, 0, 0, 0])[0], 'win');
+  assert.equal(certainStatus(mid, [remaining, 0, 0, 0])[0], null);
+  assert.equal(certainStatus(mid, [0, -5, 0, 0])[1], 'lose', 'koz kalmadı: puanı ≤ 0 olan kesin batar');
+});
+
+test('certainStatus: King ile biten oyunda yalnız seçici (başarılıysa) çıkar, aksi hâlde yalnız seçici batar', () => {
+  assert.deepEqual(certainStatus([], [0, 0, 0, 0], { declarer: 2, success: true }), ['lose', 'lose', 'win', 'lose']);
+  assert.deepEqual(certainStatus([], [0, 0, 0, 0], { declarer: 1, success: false }), ['win', 'lose', 'win', 'win']);
+});
+
+// ---------- süre sayacı, Rıfkı açılışı, son el ----------
+test('TURN_TIMER: sayaç kurulur, yeni görünümle temizlenir; yalnız son 10 sn geri sayım gösterilir', () => {
+  let s = initialState();
+  s = reduce(s, { t: 'ROOM_STATE', code: 'ABCDE', phase: 'PLAYING', hostSeat: 0, seats: room.seats }, 0);
+  s = reduce(s, { t: 'TURN_TIMER', seat: 0, ms: 30000 }, 1000);
+  assert.equal(s.turnTimer.until, 31000);
+  assert.equal(turnCountdown(s, 0, 1000), null, '30 sn kala çubuk yok');
+  assert.equal(turnCountdown(s, 1, 25000), null, 'başka koltuk için yok');
+  assert.deepEqual(turnCountdown(s, 0, 21000), { sec: 10, leftMs: 10000 });
+  assert.equal(turnCountdown(s, 0, 30500).sec, 1);
+  assert.equal(turnCountdown(s, 0, 31000), null);
+  assert.equal(nextExpiry(s, 1000), 31000 - COUNTDOWN_MS, 'çubuk başlayana kadar uyanma');
+  assert.equal(nextExpiry(s, 22300), 23000, 'sonra saniye başına');
+  const s2 = reduce(s, { t: 'GAME_VIEW', seq: 5, view: view(), events: [] }, 2000);
+  assert.equal(s2.turnTimer, null);
+});
+
+test('REDEALT olayı açık kartlar penceresini 10 sn kurar; süre bitince kapanır', () => {
+  let s = initialState();
+  const ev = { type: 'REDEALT', declarer: 0, reveals: [{ seat: 2, hand: ['AH', '2C'] }] };
+  s = reduce(s, { t: 'GAME_VIEW', seq: 1, view: view(), events: [ev] }, 5000);
+  assert.equal(s.reveal.until, 5000 + REVEAL_MS);
+  assert.equal(s.reveal.reveals[0].seat, 2);
+  assert.equal(revealLeft(s, 7000), 8000);
+  assert.equal(nextExpiry(s, 7000), 8000 > 0 ? 8000 : null, 'saniye geçişine uyanır');
+  assert.equal(pruneExpired(s, 5000 + REVEAL_MS + 1).reveal, null);
+  assert.equal(revealLeft(s, 5000 + REVEAL_MS), null);
+});
+
+test('lastTrick: köşede en son biten tur; merkezde gösterilen tur varsa bir öncekisi', () => {
+  const hist = [{ trickNo: 1, plays: [], winner: 1 }, { trickNo: 2, plays: [], winner: 3 }];
+  let s = initialState();
+  s = reduce(s, { t: 'GAME_VIEW', seq: 1, view: view({ trickHistory: hist }), events: [] }, 0);
+  assert.equal(lastTrick(s, 0).trickNo, 2);
+  s = reduce(s, { t: 'GAME_VIEW', seq: 2, view: view({ trickHistory: hist }), events: [{ type: 'TRICK_WON', plays: [], winner: 3 }] }, 1000);
+  assert.equal(lastTrick(s, 1500).trickNo, 1, 'biten tur merkezde görünürken köşede bir öncekisi');
+  assert.equal(lastTrick(s, 1000 + TRICK_SHOW_MS + 1).trickNo, 2);
+  assert.equal(lastTrick(initialState(), 0), null);
 });

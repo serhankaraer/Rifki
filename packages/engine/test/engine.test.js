@@ -507,3 +507,101 @@ test('saf fonksiyon: applyCommand girdiyi değiştirmez', () => {
   applyCommand(state, { type: 'CHOOSE_CONTRACT', seat: state.declarer, contract: 'KIZ' });
   assert.deepEqual(state, snapshot);
 });
+
+// ---- King ----
+function kozGame(seed) {
+  const { state } = createGame({ seed });
+  state.handNo = 5; state.firstDeclarer = 0; state.declarer = 0; state.turn = 0; // ilk 4 el zorunlu ceza: koz 5. elden
+  return state;
+}
+
+function kingState({ declarerTricks, trickNo, hands }) {
+  let state = kozGame('king');
+  const d = state.declarer;
+  state = applyCommand(state, { type: 'CHOOSE_CONTRACT', seat: d, contract: 'KOZ', trump: 'S', king: true }).state;
+  const used = new Set(hands.flat());
+  const pool = makeDeck().filter((c) => !used.has(c));
+  const taken = [[], [], [], []];
+  const others = [0, 1, 2, 3].filter((x) => x !== d);
+  for (let i = 0; i < declarerTricks * 4; i++) taken[d].push(pool.shift());
+  const rest = trickNo - declarerTricks;
+  for (let i = 0; i < rest * 4; i++) taken[others[0]].push(pool.shift());
+  state.hand.hands = hands;
+  state.hand.takenCards = taken;
+  state.hand.trickNo = trickNo;
+  state.hand.trick = { leader: d, plays: [] };
+  state.turn = d;
+  return { state, d, others };
+}
+
+test('King yalnız koz sözleşmesinde seçilebilir; sözleşmede ve olayda işaretlenir', () => {
+  const state = kozGame('king-flag');
+  const d = state.declarer;
+  assert.throws(() => applyCommand(state, { type: 'CHOOSE_CONTRACT', seat: d, contract: 'KIZ', king: true }), (e) => e.code === 'ILLEGAL_CONTRACT');
+  const r = applyCommand(state, { type: 'CHOOSE_CONTRACT', seat: d, contract: 'KOZ', trump: 'H', king: true });
+  assert.equal(r.state.hand.contract.king, true);
+  assert.equal(r.events.find((e) => e.type === 'CONTRACT_CHOSEN').king, true);
+  assert.equal(viewFor(r.state, d).contract.king, true);
+  const plain = applyCommand(state, { type: 'CHOOSE_CONTRACT', seat: d, contract: 'KOZ', trump: 'H' });
+  assert.equal(plain.state.hand.contract.king, undefined);
+});
+
+test('King başarılı: 11. el alınınca oyun biter, yalnız seçici çıkar', () => {
+  const probe = kozGame('king');
+  const d = probe.declarer;
+  const lows = [['2C', '3C', '4C'], ['5C', '6C', '7C'], ['8C', '9C', '10C']];
+  const hands = [[], [], [], []];
+  hands[d] = ['AS', 'KS', 'QS'];
+  [0, 1, 2, 3].filter((x) => x !== d).forEach((s, i) => { hands[s] = lows[i]; });
+  const { state } = kingState({ declarerTricks: 10, trickNo: 10, hands });
+  let s = state;
+  let events = [];
+  for (const seat of [d, (d + 1) % 4, (d + 2) % 4, (d + 3) % 4]) {
+    const card = seat === d ? 'AS' : s.hand.hands[seat][0];
+    const r = applyCommand(s, { type: 'PLAY_CARD', seat, card });
+    s = r.state; events = r.events;
+  }
+  assert.equal(s.phase, 'GAME_OVER');
+  const ended = events.find((e) => e.type === 'GAME_ENDED');
+  assert.deepEqual(ended.winners, [d]);
+  assert.equal(ended.king, true);
+  assert.equal(events.find((e) => e.type === 'KING_ENDED').success, true);
+  assert.equal(viewFor(s, 0).kingEnd.declarer, d);
+});
+
+test('King başarısız: seçici 3. eli kaybedince tam olarak o anda biter', () => {
+  const probe = kozGame('king');
+  const d = probe.declarer;
+  const o = [0, 1, 2, 3].filter((x) => x !== d);
+  const hands = [[], [], [], []];
+  hands[d] = ['2C', '3C']; hands[o[0]] = ['AC', 'KC']; hands[o[1]] = ['QC', 'JC']; hands[o[2]] = ['9C', '8C'];
+  const { state } = kingState({ declarerTricks: 9, trickNo: 11, hands });
+  state.hand.trick = { leader: o[0], plays: [] };
+  state.turn = o[0];
+  let s = state; let events = [];
+  for (const seat of [o[0], (o[0] + 1) % 4, (o[0] + 2) % 4, (o[0] + 3) % 4]) {
+    const card = seat === o[0] ? 'AC' : s.hand.hands[seat][0];
+    const r = applyCommand(s, { type: 'PLAY_CARD', seat, card });
+    s = r.state; events = r.events;
+  }
+  assert.equal(s.phase, 'GAME_OVER');
+  assert.deepEqual(events.find((e) => e.type === 'GAME_ENDED').winners, o);
+  assert.equal(s.kingEnd.success, false);
+  assert.equal(s.handResults.length, 0, 'King eli puanlanmaz');
+});
+
+test('Rıfkı yeniden dağıtımı: tetikleyen tüm oyuncuların eski elleri olayda açılır', () => {
+  let { state } = createGame({ seed: 'reveal' });
+  const d = state.declarer;
+  const o = [0, 1, 2, 3].filter((x) => x !== d);
+  const hands = state.hand.hands.map((x) => x.filter((c) => !c.endsWith('H')));
+  hands[o[0]] = [...hands[o[0]].slice(0, 12), 'AH'];
+  hands[o[1]] = [...hands[o[1]].slice(0, 11), 'KH', 'AH'].filter((c, i, a) => a.indexOf(c) === i);
+  hands[o[2]] = [...hands[o[2]].slice(0, 12), '2H'];
+  state.hand.hands = hands;
+  const r = applyCommand(state, { type: 'CHOOSE_CONTRACT', seat: d, contract: 'RIFKI' });
+  const ev = r.events.find((e) => e.type === 'REDEALT');
+  assert.deepEqual(ev.reveals.map((x) => x.seat), [o[0], o[1]]);
+  assert.deepEqual(ev.reveals[0].hand, hands[o[0]]);
+  assert.equal(ev.declarer, d);
+});

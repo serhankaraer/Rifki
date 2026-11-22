@@ -19,8 +19,9 @@ export const S2C = {
   ROOM_JOINED: 'ROOM_JOINED',   // { code, seat, token, nickname, resumed }
   ROOM_STATE: 'ROOM_STATE',     // { code, phase, hostSeat, seats[] }  (lobi + bağlantı durumu)
   GAME_VIEW: 'GAME_VIEW',       // { seq, view, events[] }  (viewFor çıktısı: yalnız o koltuğun görebildikleri)
-  SEAT_EVENT: 'SEAT_EVENT',     // { event, seat, ... }  DISCONNECTED | RECONNECTED | BOT_TOOK_OVER | CONTROL_RETURNED | LEFT
+  SEAT_EVENT: 'SEAT_EVENT',     // { event, seat, ... }  DISCONNECTED | RECONNECTED | BOT_TOOK_OVER | CONTROL_RETURNED | LEFT | TIMEOUT_PLAY
   BOT_THINKING: 'BOT_THINKING', // { seat, delayMs }
+  TURN_TIMER: 'TURN_TIMER',     // { seat, ms }  insan oyuncunun hamle süresi: ms sonra yerine bot oynar
   LEFT_ROOM: 'LEFT_ROOM',
   ERROR: 'ERROR',               // { code, detail? }
   PONG: 'PONG',

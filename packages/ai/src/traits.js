@@ -21,6 +21,27 @@ export const TRAIT_SD = 20;
 export const MIN_THINK_MS = 1000;
 export const MAX_THINK_MS = 3000;
 
+/**
+ * Alt sınır: görünen 1 değeri oyun davranışında bu değer gibi çalışır (100 hep 100).
+ * Simülasyonla belirlendi (tools/experiments.js floor): tüm özellikleri 1 olan bot, ortalama botlara karşı
+ * taban 1'de -633, taban 20'de -564, taban 30'da -316, taban 40'ta -216 puan/oyun. 20 neredeyse fark yaratmıyor;
+ * 30, en kötü karakteri "belirgin zayıf ama mantıklı oynayan" (~ -300) yapıyor.
+ */
+export const TRAIT_FLOOR = 30;
+
+/**
+ * Etkin özellik değeri: görünen 1-100 değeri, oyun davranışında [floor, 100] aralığına yayılır.
+ * (floor = 1 -> değişiklik yok; floor = 30 -> görünen 1, davranışta 30 gibi çalışır.) thinkSpeed bunun dışındadır.
+ */
+export function effectiveTraits(traits, floor = TRAIT_FLOOR) {
+  const out = { ...traits };
+  for (const k of TRAIT_KEYS) {
+    if (k === 'thinkSpeed') continue;
+    out[k] = floor + ((100 - floor) * (traits[k] - 1)) / 99;
+  }
+  return out;
+}
+
 export function gauss(rng) {
   const u1 = 1 - rng(); // (0, 1]
   const u2 = rng();

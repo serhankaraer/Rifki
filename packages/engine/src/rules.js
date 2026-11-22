@@ -12,19 +12,30 @@ export function breaksHearts(type, playsBefore, card) {
   return playsBefore.length > 0 && suitOf(playsBefore[0].card) !== 'H';
 }
 
-const TRUMP_LEAD_RANKS = ['A', 'K', 'Q'];
+const HONORS = ['A', 'K', 'Q'];
+const hasAllHonors = (trumps) => HONORS.every((r) => trumps.some((c) => rankSymbol(c) === r));
 
 /**
- * Koz sözleşmesinde tur açan oyuncu koz ile açabilir mi?
- * Koz kırılmışsa (bir oyuncu rengi olmadığı için kozla kesmişse), ya da elinde kozun A, K ve Q'sunun ÜÇÜ de varsa,
- * ya da yalnız koz kalmışsa evet.
+ * Koz kozlanmadan (kırılmadan) koz ile açma imtiyazı: elinde kozun A, K ve Q'sunun üçü de olan oyuncu
+ * koz ile açabilir — ama yalnızca bu üç kartla ve arka arkaya üç turda hepsini oynamak zorundadır
+ * (h.trumpRun: { seat, need: [henüz oynanmamış A/K/Q] }).
+ * Bu fonksiyon, kart oynanmadan ÖNCE (tur açılırken) çağrılır: handBefore = oyuncunun oynamadan önceki eli.
  */
-export function canLeadTrump(cards, trump, trumpBroken) {
-  if (trumpBroken) return true;
-  const trumps = cards.filter((c) => suitOf(c) === trump);
-  if (trumps.length === 0) return true; // koz yoksa zaten kısıt yok
-  if (trumps.length === cards.length) return true; // yalnız koz kaldı
-  return TRUMP_LEAD_RANKS.every((r) => trumps.some((c) => rankSymbol(c) === r));
+export function advanceTrumpRun(h, seat, card, handBefore) {
+  if (h.contract.type !== KOZ || h.trick.plays.length > 0) return;
+  const trump = h.contract.trump;
+  const r = rankSymbol(card);
+  if (h.trumpRun && h.trumpRun.seat === seat) {
+    if (suitOf(card) === trump) {
+      const need = h.trumpRun.need.filter((x) => x !== r);
+      h.trumpRun = need.length > 0 ? { seat, need } : null;
+    }
+    return;
+  }
+  h.trumpRun = null;
+  if (suitOf(card) !== trump || !HONORS.includes(r) || h.trumpBroken) return;
+  const trumps = handBefore.filter((c) => suitOf(c) === trump);
+  if (trumps.length < handBefore.length && hasAllHonors(trumps)) h.trumpRun = { seat, need: HONORS.filter((x) => x !== r) };
 }
 
 /** Masada koz varsa, oynanacak kozlar arasında daha büyük koz varsa yalnız onlar; yoksa hepsi. */
@@ -47,8 +58,20 @@ export function legalCards(h, seat, config = {}) {
 
   // Tur açma
   if (plays.length === 0) {
-    if (type === KOZ && !canLeadTrump(cards, trump, h.trumpBroken)) {
-      return cards.filter((c) => suitOf(c) !== trump); // koz kırılmadan koz açılamaz
+    if (type === KOZ) {
+      const trumps = cards.filter((c) => suitOf(c) === trump);
+      const run = h.trumpRun;
+      if (run && run.seat === seat) {
+        // A-K-Q serisi sürüyor: kalan onur kartlarını arka arkaya açmak zorunda
+        const need = trumps.filter((c) => run.need.includes(rankSymbol(c)));
+        if (need.length > 0) return need;
+      }
+      if (trumps.length > 0 && trumps.length < cards.length && !h.trumpBroken) {
+        // Koz kırılmadan koz açılamaz; istisna: A, K, Q'nun üçü de elindeyse bu üç kartla
+        const withHonors = hasAllHonors(trumps);
+        return cards.filter((c) => suitOf(c) !== trump || (withHonors && HONORS.includes(rankSymbol(c))));
+      }
+      return cards.slice();
     }
     if ((type === 'RIFKI' || type === 'KUPA') && !h.heartsBroken) {
       const nonHearts = cards.filter((c) => suitOf(c) !== 'H');

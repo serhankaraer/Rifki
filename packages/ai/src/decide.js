@@ -1,20 +1,32 @@
 // Karar mekanizması: sözleşme seçimi ve kart oynama.
 // Monte Carlo (determinization): bilinmeyen kartlar olası dağılımlarla paylaştırılır, her aday hamle
 // sezgisel politikayla sonuna kadar oynatılıp puanlanır.
-import { SUITS, suitOf, KOZ, breaksHearts } from '@rifki/engine';
+import { SUITS, suitOf, KOZ, breaksHearts, advanceTrumpRun } from '@rifki/engine';
 import { updateMemory, sampleWorld, unseenPool } from './belief.js';
 import { heuristicPlay, rollout } from './sim.js';
 import { gauss } from './traits.js';
+import { continuationValue } from './contract-plan.js';
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+// Ayar katsayıları (ölçüm araçları geçici olarak değiştirebilir; üretimde varsayılanlar kullanılır).
+export const TUNING_DEFAULTS = {
+  riskCard: 0.6,       // risk iştahının kart seçimine etkisi (sapma katsayısı)
+  riskContract: 0.5,   // risk iştahının sözleşme seçimine etkisi
+  aggression: 2.0,     // saldırganlık 100 iken öndeki rakibin zararının ağırlığı
+  saShift: 120,        // skor farkındalığı 100 iken, rahat öndeyken/umutsuz gerideyken risk iştahı kayması (z=±1 -> ±60)
+};
+export const TUNING = { ...TUNING_DEFAULTS };
 const pickRandom = (arr, rng) => arr[Math.floor(rng() * arr.length)];
 
-// Skor farkındalığı: gerideyken risk artar, öndeyken azalır.
+// Skor farkındalığı: oyunun amacı sıfırın üstünde bitirmektir (kazanan = puanı > 0). Kalan ellerde beklenen oynaklığa göre
+// durum z = puan / (el sapması * karekök(kalan el)) ile ölçülür: rahat öndeyken (z > 0) oyun güvene alınır (risk iştahı düşer),
+// umutsuz gerideyken (z < 0) kaybedecek bir şey olmadığı için risk iştahı artar. Erken oyunda z küçüktür, bu yüzden kayma da küçüktür.
+const HAND_SD = 140;
 function effectiveRisk(view, traits) {
-  const me = view.scores[view.seat];
-  const others = view.scores.filter((_, i) => i !== view.seat);
-  const avg = others.reduce((a, b) => a + b, 0) / others.length;
-  const shift = clamp((avg - me) / 500, -1, 1) * (traits.scoreAwareness / 100) * 40;
+  const left = Math.max(0, 20 - view.handNo);
+  const z = view.scores[view.seat] / (HAND_SD * Math.sqrt(Math.max(left, 0.25)));
+  const shift = -clamp(z, -2, 2) * 0.5 * (traits.scoreAwareness / 100) * TUNING.saShift;
   return clamp(traits.risk + shift, 1, 100);
 }
 
@@ -46,9 +58,10 @@ function meanStd(values) {
   return { mean: m, std: Math.sqrt(s / Math.max(1, n - 1)) };
 }
 
-function riskAdjusted(values, effRisk) {
+// Risk iştahı: yüksekse oynak (yüksek sapmalı) seçenekleri, düşükse güvenli olanları tercih eder.
+function riskAdjusted(values, effRisk, k) {
   const { mean, std } = meanStd(values);
-  return mean + ((effRisk - 50) / 50) * 0.35 * std;
+  return mean + ((effRisk - 50) / 50) * k * std;
 }
 
 // Tutarlılık: düşükse bazen en iyi yerine 2. veya 3. hamleyi seçer.
@@ -65,8 +78,9 @@ function simsForCard(lookahead, scale) {
   return Math.max(4, Math.round(scale * (6 + ((lookahead - 25) / 75) * 70)));
 }
 
-function simsForContract(lookahead, scale) {
-  return Math.max(4, Math.round(scale * (8 + lookahead * 0.5)));
+// El değerlendirme: yüksekse sözleşmeyi daha çok dağıtımla değerlendirir (daha kesin tahmin).
+function simsForContract(lookahead, scale, handEval) {
+  return Math.max(4, Math.round(scale * (8 + lookahead * 0.5) * (0.6 + 0.8 * (handEval / 100))));
 }
 
 export function decideCard(view, profile, memory, rng, opts = {}) {
@@ -77,39 +91,33 @@ export function decideCard(view, profile, memory, rng, opts = {}) {
   if (legal.length === 1) return legal[0];
 
   const trickNo = view.trickNo + 1; // oynanmakta olan tur
-  const pErr = (1 - t.consistency / 100) * 0.3;
-
-  // Düşük ileri hesap: sadece sezgisel oynar
-  if (t.lookahead < 25) {
-    if (rng() < pErr) return pickRandom(legal, rng);
-    const hands = [[], [], [], []];
-    hands[me] = view.myHand.slice();
-    const h = { contract: view.contract, hands, trick: { plays: view.trick.plays.map((p) => ({ ...p })) }, heartsBroken: view.heartsBroken, trumpBroken: view.trumpBroken };
-    return heuristicPlay(h, me, trickNo);
-  }
-
+  const sample = opts.sampleWorld ?? sampleWorld; // (ölçüm için: hile yapan örnekleyici takılabilir)
   const sims = simsForCard(t.lookahead, opts.simsScale ?? 1);
   const pool = unseenPool(view, memory);
   const effRisk = effectiveRisk(view, t);
   const leader = scoreLeader(view);
-  const aggrFactor = 0.6 * (t.aggression / 100);
+  const aggrFactor = TUNING.aggression * (t.aggression / 100);
   const results = legal.map(() => []);
 
   for (let w = 0; w < sims; w++) {
-    const world = sampleWorld(view, memory, rng, pool);
+    const world = sample(view, memory, rng, pool);
     legal.forEach((card, ci) => {
       const hands = world.map((a) => a.slice());
       hands[me].splice(hands[me].indexOf(card), 1);
       const plays = view.trick.plays.map((p) => ({ ...p }));
+      // A-K-Q serisi: bu kart seriyi başlatıyor/ilerletiyor mu?
+      const h0 = { contract: view.contract, trick: { plays: view.trick.plays }, trumpBroken: view.trumpBroken, trumpRun: view.trumpRun ? { seat: view.trumpRun.seat, need: [...view.trumpRun.need] } : null };
+      advanceTrumpRun(h0, me, card, view.myHand);
       plays.push({ seat: me, card });
       const deltas = rollout(view.contract, hands, plays, (me + 1) % 4, trickNo, view.heartsBroken || breaksHearts(view.contract.type, view.trick.plays, card),
-        view.trumpBroken || (view.contract.type === KOZ && plays.length > 1 && suitOf(plays[0].card) !== view.contract.trump && suitOf(card) === view.contract.trump));
+        view.trumpBroken || (view.contract.type === KOZ && plays.length > 1 && suitOf(plays[0].card) !== view.contract.trump && suitOf(card) === view.contract.trump),
+        h0.trumpRun);
       results[ci].push(utility(deltas, me, leader, aggrFactor));
     });
   }
 
   const ranked = legal
-    .map((card, ci) => ({ card, score: riskAdjusted(results[ci], effRisk) }))
+    .map((card, ci) => ({ card, score: riskAdjusted(results[ci], effRisk, TUNING.riskCard) }))
     .sort((a, b) => b.score - a.score);
   return chooseWithNoise(ranked, t.consistency, rng).card;
 }
@@ -123,14 +131,17 @@ export function decideContract(view, profile, memory, rng, opts = {}) {
   if (sel.koz) for (const s of SUITS) options.push({ contract: 'KOZ', trump: s });
   if (options.length === 1) return options[0];
 
-  const sims = simsForContract(t.lookahead, opts.simsScale ?? 1);
+  const sample = opts.sampleWorld ?? sampleWorld;
+  const sims = simsForContract(t.lookahead, opts.simsScale ?? 1, t.handEval);
   const pool = unseenPool(view, memory);
   const effRisk = effectiveRisk(view, t);
   const noiseSd = ((100 - t.handEval) / 100) * 90; // el değerlendirme zayıfsa değerlendirme gürültülü
+  // Fırsat maliyeti: kalan koz/ceza haklarının gelecekteki değeri (el değerlendirme yüksekse tam, düşükse az hesaba katılır)
+  const planWeight = t.handEval / 100;
   const results = options.map(() => []);
 
   for (let w = 0; w < sims; w++) {
-    const world = sampleWorld(view, memory, rng, pool);
+    const world = sample(view, memory, rng, pool);
     options.forEach((opt, oi) => {
       const hands = world.map((a) => a.slice());
       const contract = { type: opt.contract, trump: opt.trump };
@@ -140,7 +151,7 @@ export function decideContract(view, profile, memory, rng, opts = {}) {
   }
 
   const ranked = options
-    .map((opt, oi) => ({ opt, score: riskAdjusted(results[oi], effRisk) + gauss(rng) * noiseSd }))
+    .map((opt, oi) => ({ opt, score: riskAdjusted(results[oi], effRisk, TUNING.riskContract) + planWeight * continuationValue(view, opt) + gauss(rng) * noiseSd }))
     .sort((a, b) => b.score - a.score);
   return chooseWithNoise(ranked, t.consistency, rng).opt;
 }

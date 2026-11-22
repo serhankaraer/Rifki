@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   makeDeck, suitOf, createRng, createGame, applyCommand, viewFor, currentOptions, RuleError,
-  legalCards, breaksHearts, rifkiNeedsRedeal, trickWinner, scoreHand, selectableContracts, newLedger, isLedgerFeasible,
+  legalCards, breaksHearts, advanceTrumpRun, rifkiNeedsRedeal, trickWinner, scoreHand, selectableContracts, newLedger, isLedgerFeasible,
   PENALTY_TYPES, STRUCTURE,
 } from '../src/index.js';
 
@@ -175,6 +175,87 @@ test('Kupa almaz: kupa yalnız rengi olmayan oyuncu kupa atmak zorunda kalınca 
   assert.equal(state.hand.heartsBroken, false, 'dört kupa tur oynandı ama kimse rengi olmadığı için kupa atmadı');
 });
 
+test('koz: A-K-Q ile koz açan oyuncu arka arkaya üç turda A, K, Q açmak zorundadır', () => {
+  const koz = { type: 'KOZ', trump: 'S' };
+  const hand = ['AS', 'KS', 'QS', '9S', '2D', '3C'];
+  const h = { contract: koz, hands: [hand, [], [], []], trick: { leader: 0, plays: [] }, heartsBroken: false, trumpBroken: false, trumpRun: null };
+  // 1. tur: A açılır -> seri başlar, K ve Q kalır
+  advanceTrumpRun(h, 0, 'AS', hand);
+  assert.deepEqual(h.trumpRun, { seat: 0, need: ['K', 'Q'] });
+  h.hands[0] = hand.filter((c) => c !== 'AS');
+  assert.deepEqual(legalCards(h, 0).sort(), ['KS', 'QS'], 'seri sürerken yalnız K ya da Q açılabilir');
+  // 2. tur: K
+  advanceTrumpRun(h, 0, 'KS', h.hands[0]);
+  assert.deepEqual(h.trumpRun, { seat: 0, need: ['Q'] });
+  h.hands[0] = h.hands[0].filter((c) => c !== 'KS');
+  assert.deepEqual(legalCards(h, 0), ['QS']);
+  // 3. tur: Q -> seri biter, normal kurallara dönülür (koz hâlâ kırılmamış, A-K-Q artık yok)
+  advanceTrumpRun(h, 0, 'QS', h.hands[0]);
+  assert.equal(h.trumpRun, null);
+  h.hands[0] = h.hands[0].filter((c) => c !== 'QS');
+  assert.deepEqual(legalCards(h, 0).sort(), ['2D', '3C']);
+  // koz kırılmışsa ya da yalnız koz varsa seri zorunluluğu doğmaz
+  const broken = { ...h, hands: [hand, [], [], []], trumpBroken: true, trumpRun: null, trick: { leader: 0, plays: [] } };
+  advanceTrumpRun(broken, 0, 'AS', hand);
+  assert.equal(broken.trumpRun, null);
+  const onlyTrumps = ['AS', 'KS', 'QS', '2S'];
+  const ot = { contract: koz, hands: [onlyTrumps, [], [], []], trick: { leader: 0, plays: [] }, trumpBroken: false, trumpRun: null };
+  advanceTrumpRun(ot, 0, '2S', onlyTrumps);
+  assert.equal(ot.trumpRun, null);
+  // A-K-Q olmadan açan (ör. koz kırılmışken) seri başlatmaz; eksik onurla açılamaz
+  const noQ = { contract: koz, hands: [['AS', 'KS', '5S', '2D'], [], [], []], trick: { leader: 0, plays: [] }, trumpBroken: false, trumpRun: null };
+  assert.deepEqual(legalCards(noQ, 0), ['2D']);
+});
+
+test('oyun içinde: A-K-Q serisi motor tarafından zorunlu kılınır', () => {
+  let { state } = createGame({ seed: 'akq' });
+  state.handNo = 5;
+  state = applyCommand(state, { type: 'CHOOSE_CONTRACT', seat: state.turn, contract: 'KOZ', trump: 'S' }).state;
+  const d = state.turn; const order = [0, 1, 2, 3].map((i) => (d + i) % 4);
+  const layout = [['AS', 'KS', 'QS', '2D', '3D'], ['4S', '4D', '5D', '6D', '7D'], ['5S', '8D', '9D', '10D', 'JD'], ['6S', 'QD', 'KD', 'AD', '2C']];
+  state.hand.hands = [0, 1, 2, 3].map((seat) => layout[order.indexOf(seat)]);
+  state = applyCommand(state, { type: 'PLAY_CARD', seat: d, card: 'AS' }).state;
+  for (let i = 1; i < 4; i++) state = applyCommand(state, { type: 'PLAY_CARD', seat: order[i], card: ['4S', '5S', '6S'][i - 1] }).state;
+  assert.equal(state.turn, d, 'A açan turu kazanır');
+  assert.deepEqual(viewFor(state, d).trumpRun, { seat: d, need: ['K', 'Q'] });
+  assert.throws(() => applyCommand(state, { type: 'PLAY_CARD', seat: d, card: '2D' }), (e) => e.code === 'ILLEGAL_CARD');
+  state = applyCommand(state, { type: 'PLAY_CARD', seat: d, card: 'QS' }).state; // Q önce de olabilir
+  assert.deepEqual(viewFor(state, d).trumpRun, { seat: d, need: ['K'] });
+});
+
+test('ceza sözleşmeleri: rengi olmayan oyuncu elindeki ceza kartını atmak zorundadır', () => {
+  const led = [{ seat: 1, card: '9C' }];
+  const legal = (type, hand) => legalCards(mk({ type }, [hand, [], [], []], led), 0).sort();
+  assert.deepEqual(legal('KIZ', ['QH', 'QS', '5D', '6D']), ['QH', 'QS']);
+  assert.deepEqual(legal('KIZ', ['5D', '6D']), ['5D', '6D'], 'ceza kartı yoksa serbest');
+  assert.deepEqual(legal('ERKEK', ['KD', 'JS', 'QS', '5D']), ['JS', 'KD']);
+  assert.deepEqual(legal('KUPA', ['2H', '9H', '5D']), ['2H', '9H']);
+  assert.deepEqual(legal('RIFKI', ['KH', '2H', '5D']), ['KH'], 'Rıfkı: kupa papazı varsa onu');
+  assert.deepEqual(legal('RIFKI', ['2H', '9H', '5D']), ['2H', '9H'], 'Rıfkı: papaz yoksa herhangi bir kupa');
+  assert.deepEqual(legal('RIFKI', ['5D', '6D']), ['5D', '6D']);
+  // renge uyabiliyorsa ceza kartını atamaz (önce renge uyma)
+  assert.deepEqual(legalCards(mk({ type: 'KIZ' }, [['QH', '2C', '5D'], [], [], []], led), 0), ['2C']);
+});
+
+test('ceza sözleşmelerinde büyütme zorunluluğu yoktur; koz yükseltme yalnız koz içindir', () => {
+  const plays = [{ seat: 1, card: '9C' }, { seat: 2, card: 'KC' }];
+  for (const type of ['KIZ', 'ERKEK', 'KUPA', 'RIFKI', 'EL_ALMAZ', 'SON_IKI']) {
+    assert.deepEqual(legalCards(mk({ type }, [['2C', 'QC', 'AC'], [], [], []], plays), 0).sort(), ['2C', 'AC', 'QC'], `${type}: küçük kart da atılabilir`);
+  }
+  // koz oyununda koz olmayan rengi büyütmek zorunlu değil
+  assert.deepEqual(legalCards(mk({ type: 'KOZ', trump: 'S' }, [['2C', 'QC', 'AC'], [], [], []], plays), 0).sort(), ['2C', 'AC', 'QC']);
+});
+
+test('viewFor: tricksTaken alınan el sayısını verir', () => {
+  const rng = createRng('tt');
+  let { state } = createGame({ seed: 'tt' });
+  state.handNo = 5;
+  state = applyCommand(state, { type: 'CHOOSE_CONTRACT', seat: state.turn, contract: 'EL_ALMAZ' }).state;
+  assert.deepEqual(viewFor(state, 0).tricksTaken, [0, 0, 0, 0]);
+  for (let i = 0; i < 8; i++) { const o = currentOptions(state); state = applyCommand(state, { type: 'PLAY_CARD', seat: o.seat, card: pick(o.cards, rng) }).state; }
+  assert.equal(viewFor(state, 0).tricksTaken.reduce((a, b) => a + b, 0), 2);
+});
+
 test('Rıfkı yeniden dağıtım şartı: başkasında kupa yalnızca [A], [K] ya da [A,K]', () => {
   const H = (...hearts) => ['2C', '3C', ...hearts];
   const mkHands = (a, b, c, d) => [a, b, c, d];
@@ -287,7 +368,7 @@ test('koz: kırılmadan koz açılamaz; kozun A, K ve Q üçü birden varsa ya d
   assert.deepEqual(lead(['3S', 'JS', '2D']), ['2D']);
   assert.deepEqual(lead(['3S', 'AS', 'KS', '2D']), ['2D'], 'A ve K yetmez');
   assert.deepEqual(lead(['3S', 'QS', 'KS', '2D']), ['2D'], 'K ve Q yetmez');
-  assert.deepEqual(lead(['3S', 'AS', 'KS', 'QS', '2D']), ['2D', '3S', 'AS', 'KS', 'QS'].sort(), 'A+K+Q varsa her koz açılabilir');
+  assert.deepEqual(lead(['3S', 'AS', 'KS', 'QS', '2D']), ['2D', 'AS', 'KS', 'QS'].sort(), 'A+K+Q varsa yalnız bu üç kozla açılabilir (3S açılamaz)');
   assert.deepEqual(lead(['3S', '9S']), ['3S', '9S']); // yalnız koz
   assert.deepEqual(lead(['3S', '9S', '2D'], true), ['2D', '3S', '9S'].sort()); // kırılmış
 });

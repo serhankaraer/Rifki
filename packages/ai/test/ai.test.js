@@ -6,8 +6,10 @@ import {
 import {
   NAMES, FEMALE_NAMES, MALE_NAMES, TRAIT_KEYS, TRAIT_MEAN, sampleTrait, thinkDelayMs, createBotProfiles,
   createMemory, updateMemory, sampleWorld, unseenPool, rollout, heuristicPlay, trickPointsFor, createBot,
-  MIN_THINK_MS, MAX_THINK_MS,
+  MIN_THINK_MS, MAX_THINK_MS, effectiveTraits, TRAIT_FLOOR,
 } from '../src/index.js';
+import { futureValue, continuationValue } from '../src/contract-plan.js';
+import { runGame, traitsAll as arenaTraits } from '../tools/arena.js';
 
 const traitsAll = (v, over = {}) => ({ ...Object.fromEntries(TRAIT_KEYS.map((k) => [k, v])), ...over });
 const profile = (id, v, over) => ({ id, name: id, traits: traitsAll(v, over) });
@@ -284,4 +286,97 @@ test('güçlü kişilik, zayıf kişiliğe karşı belirgin biçimde daha iyi pu
   }
   assert.ok(diffSum / G > 300, `ortalama fark ${diffSum / G}`);
   assert.ok(wins >= 5, `güçlü ${wins}/${G} oyun kazandı`);
+});
+
+// ---- alt sınır ----
+test('etkin özellik: görünen 1 -> TRAIT_FLOOR, 100 -> 100, artan; thinkSpeed değişmez', () => {
+  const lo = effectiveTraits(traitsAll(1));
+  const hi = effectiveTraits(traitsAll(100));
+  const mid = effectiveTraits(traitsAll(50));
+  for (const k of TRAIT_KEYS) {
+    if (k === 'thinkSpeed') { assert.equal(lo[k], 1); assert.equal(hi[k], 100); continue; }
+    assert.ok(Math.abs(lo[k] - TRAIT_FLOOR) < 1e-9, `${k} alt sınır`);
+    assert.ok(Math.abs(hi[k] - 100) < 1e-9);
+    assert.ok(lo[k] < mid[k] && mid[k] < hi[k]);
+  }
+  assert.deepEqual(effectiveTraits(traitsAll(37), 1), traitsAll(37), 'taban 1 = değişiklik yok');
+  assert.ok(TRAIT_FLOOR > 1 && TRAIT_FLOOR < 100);
+});
+
+test('arena: tam oyun başsız oynanır, toplam puan 0', () => {
+  const scores = runGame({ seed: 'arena-smoke', seats: [arenaTraits(1), arenaTraits(50), arenaTraits(100), { kind: 'random' }].map((x) => (x.kind ? x : { kind: 'bot', traits: x })), simsScale: 0.2 });
+  assert.equal(scores.reduce((a, b) => a + b, 0), 0);
+});
+
+// ---- derin çıkarım ----
+const ZERO = () => 0; // her olasılık kontrolünü geçirir
+const top = { tracking: 100, inference: 100 };
+function stubView(over) {
+  return {
+    seat: 0, handNo: 1, contract: { type: 'KOZ', trump: 'S' }, trickHistory: [], trick: { plays: [] },
+    penaltyTaken: [[], [], [], []], myHand: [], handSizes: [13, 13, 13, 13], trumpRun: null, ...over,
+  };
+}
+
+test('derin çıkarım: masadaki kozdan küçük koz atan oyuncunun daha büyük kozu yoktur', () => {
+  const mem = createMemory();
+  updateMemory(mem, stubView({ trick: { plays: [{ seat: 3, card: 'QS' }, { seat: 1, card: '5S' }] } }), top, ZERO);
+  assert.ok(mem.cannot[1].has('KS') && mem.cannot[1].has('AS'));
+  assert.ok(!mem.cannot[1].has('2S'));
+});
+
+test('derin çıkarım: koz kırılmadan A/K/Q olmayan kozla açan oyuncunun elinde yalnız koz vardır', () => {
+  const mem = createMemory();
+  updateMemory(mem, stubView({ trick: { plays: [{ seat: 2, card: '5S' }] } }), top, ZERO);
+  assert.deepEqual([...mem.voids[2]].sort(), ['C', 'D', 'H']);
+  const mem2 = createMemory(); // onur kartıyla açış: kesin çıkarım yok
+  updateMemory(mem2, stubView({ trick: { plays: [{ seat: 2, card: 'KS' }] } }), top, ZERO);
+  assert.equal(mem2.voids[2].size, 0);
+});
+
+test('derin çıkarım: kupa kırılmadan kupa ile açan oyuncunun elinde yalnız kupa vardır; çıkarım=1 bunu fark etmez', () => {
+  const view = stubView({ contract: { type: 'KUPA', trump: null }, trick: { plays: [{ seat: 2, card: '5H' }] } });
+  const mem = createMemory();
+  updateMemory(mem, view, top, ZERO);
+  assert.deepEqual([...mem.voids[2]].sort(), ['C', 'D', 'S']);
+  const weak = createMemory();
+  updateMemory(weak, view, { tracking: 100, inference: 1 }, () => 0.5);
+  assert.equal(weak.voids[2].size, 0);
+});
+
+test('A-K-Q serisi sürerken serideki oyuncunun kalan onur kartları ona dağıtılır', () => {
+  const view = stubView({ seat: 0, myHand: ['2C'], handSizes: [1, 4, 1, 1], trumpRun: { seat: 1, need: ['K', 'Q'] }, trick: { plays: [{ seat: 1, card: 'AS' }] } });
+  const mem = createMemory();
+  updateMemory(mem, view, top, ZERO);
+  for (let i = 0; i < 20; i++) {
+    const world = sampleWorld(view, mem, createRng(`must-${i}`), unseenPool(view, mem));
+    assert.ok(world[1].includes('KS') && world[1].includes('QS'));
+  }
+});
+
+// ---- sözleşme planlaması ----
+test('sözleşme planı: daha çok kalan hak = daha çok gelecek değer; hak yoksa 0', () => {
+  const all = [0, 1, 2, 3, 4, 5];
+  assert.equal(futureValue(0, 0, all), 0);
+  assert.ok(futureValue(2, 3, all) > futureValue(1, 3, all));
+  assert.ok(futureValue(1, 1, all) > futureValue(1, 0, all));
+  const view = { seat: 0, ledger: { koz: [0, 0, 0, 0], ceza: [0, 0, 0, 0], typeUses: { RIFKI: 0, KIZ: 0, ERKEK: 0, KUPA: 0, SON_IKI: 0, EL_ALMAZ: 0 } } };
+  const v = continuationValue(view, { contract: 'KOZ', trump: 'S' });
+  assert.ok(Number.isFinite(v) && v > 0);
+});
+
+test('ilan edenin sözleşmesi elini ele verir: koz ilan eden rakip daha çok koz alır; çıkarım=1 neredeyse etkilenmez', () => {
+  const mine = ['2C', '3C', '4C', '5C', '6C', '7C', '8C', '9C', '10C', 'JC', 'QC', 'KC', 'AC'];
+  const view = stubView({ declarer: 2, myHand: mine, handSizes: [13, 13, 13, 13] });
+  const meanTrumps = (inference) => {
+    const mem = createMemory();
+    updateMemory(mem, view, { tracking: 100, inference }, () => 0.99);
+    const pool = unseenPool(view, mem);
+    let sum = 0;
+    for (let i = 0; i < 400; i++) sum += sampleWorld(view, mem, createRng(`tilt-${i}`), pool)[2].filter((c) => suitOf(c) === 'S').length;
+    return sum / 400;
+  };
+  const strong = meanTrumps(100);
+  const none = meanTrumps(1);
+  assert.ok(strong > none + 0.5, `çıkarım=100: ${strong}, çıkarım=1: ${none}`);
 });

@@ -87,6 +87,7 @@ export default {
   'game.back': 'Ana ekrana dön',
   'game.loading': 'Oyun yükleniyor…',
   'game.penaltyCards': 'Alınan ceza kartları',
+  'game.tricksTaken': 'Alınan eller',
   'game.earlyEnd': 'Tüm ceza kartları oynandı; el {n}. turda erken bitti.',
   'game.redealt': 'Rıfkı seçildi ama bir oyuncunun kupa serisi yalnızca A ve/veya papaz olduğu için kartlar yeniden dağıtıldı.',
   'game.won': 'Kazandı',

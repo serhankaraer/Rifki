@@ -1,6 +1,6 @@
 // Hızlı el simülasyonu (Monte Carlo rollout) ve sezgisel (heuristic) oynama politikası.
 // Motorun saf fonksiyonlarını (legalCards, trickWinner) kullanır ama durumu klonlamaz.
-import { suitOf, rankOf, rankSymbol, legalCards, trickWinner, breaksHearts, KOZ, POINTS } from '@rifki/engine';
+import { suitOf, rankOf, rankSymbol, legalCards, trickWinner, breaksHearts, advanceTrumpRun, KOZ, POINTS } from '@rifki/engine';
 
 export function cardPenalty(type, card) {
   switch (type) {
@@ -104,14 +104,15 @@ export function heuristicPlay(h, seat, trickNo) {
  * hands: 4 el (değiştirilir), plays: oynanmakta olan turun kartları (değiştirilir), turn: sıradaki koltuk,
  * trickNo: oynanmakta olan turun numarası. Dönen: koltuk başına kalan turlardan gelen puan farkı.
  */
-export function rollout(contract, hands, plays, turn, trickNo, heartsBroken, trumpBroken = false) {
+export function rollout(contract, hands, plays, turn, trickNo, heartsBroken, trumpBroken = false, trumpRun = null) {
   const deltas = [0, 0, 0, 0];
-  const h = { contract, hands, trick: { plays }, heartsBroken, trumpBroken };
+  const h = { contract, hands, trick: { plays }, heartsBroken, trumpBroken, trumpRun: trumpRun ? { seat: trumpRun.seat, need: [...trumpRun.need] } : null };
   let cur = plays;
   for (;;) {
     while (cur.length < 4) {
       const card = heuristicPlay(h, turn, trickNo);
       const hand = hands[turn];
+      advanceTrumpRun(h, turn, card, hand);
       hand.splice(hand.indexOf(card), 1);
       if (breaksHearts(contract.type, cur, card)) h.heartsBroken = true;
       cur.push({ seat: turn, card });

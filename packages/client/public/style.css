@@ -133,8 +133,11 @@ label { display: block; margin: 14px 0 6px; font-size: 0.9rem; color: var(--mute
 
 .backs, .pen-row { display: flex; justify-content: center; width: min(100%, calc(var(--mw) * 6.5)); height: calc(var(--mh) + 2px); min-width: 0; overflow: hidden; }
 .pen-row { width: min(100%, calc(var(--mw) * 8)); }
+.pen-row .count { flex: 0 0 auto; align-self: center; margin-left: 5px; min-width: 1.4em; padding: 0 5px; border-radius: 999px; background: var(--accent); color: var(--accent-text); font-weight: 800; font-size: 0.8rem; line-height: 1.5em; text-align: center; }
+.pen-row.tricks-row { align-items: center; }
+.pen-row.tricks-row .card.land { flex: 0 0 auto; width: var(--mh); min-width: 0; height: var(--mw); }
 .backs .card, .pen-row .card { flex: 0 1 var(--mw); width: var(--mw); min-width: 7px; height: var(--mh); }
-.backs .card:last-child, .pen-row .card:last-child { flex-shrink: 0; }
+.backs .card:last-child, .pen-row .card:last-child, .tricks-row .card:last-of-type { flex-shrink: 0; }
 
 .center { grid-area: center; min-height: 0; min-width: 0; display: flex; align-items: center; justify-content: center; }
 .status { color: var(--muted); text-align: center; padding: 8px; }

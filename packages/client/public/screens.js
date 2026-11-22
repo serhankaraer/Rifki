@@ -116,6 +116,13 @@ function penaltyRow(cards, owner) {
     cards.map((c) => cardFace(c, 'mini')));
 }
 
+/** El almaz: alınan el sayısı önde tek yatay kart + sarı rakam olarak görünür (herkese açık). */
+function tricksRow(n, owner) {
+  return h('div', { class: 'pen-row tricks-row', dataset: { tricks: n, penalty: owner }, 'aria-label': `${t('game.tricksTaken')}: ${n}` },
+    n > 0 ? cardBack('mini land') : null, // tek kart, yatay; alınan el sayısı sarı rakamla (0 iken gösterilmez, yer ayrılı kalır)
+    n > 0 ? h('div', { class: 'count' }, `${n}`) : null);
+}
+
 function seatPanel(state, seat, pos, trickInfo) {
   const { view, room } = state;
   const s = room.seats[seat];
@@ -136,7 +143,7 @@ function seatPanel(state, seat, pos, trickInfo) {
       h('span', { class: `think ${thinking ? 'on' : ''}`, role: 'img', 'aria-label': t('game.thinking'), dataset: { thinking: thinking ? '1' : '0' } },
         h('i'), h('i'), h('i'))),
     backs,
-    penaltyRow(view.penaltyTaken?.[seat] ?? [], seat));
+    view.contract?.type === 'EL_ALMAZ' ? tricksRow(view.tricksTaken?.[seat] ?? 0, seat) : penaltyRow(view.penaltyTaken?.[seat] ?? [], seat));
 }
 
 function trickArea(state, trickInfo) {

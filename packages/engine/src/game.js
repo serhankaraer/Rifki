@@ -13,7 +13,7 @@ import {
   penaltyCardsTaken,
   allPenaltyTaken,
 } from './contracts.js';
-import { legalCards, trickWinner, breaksHearts } from './rules.js';
+import { legalCards, trickWinner, breaksHearts, advanceTrumpRun } from './rules.js';
 
 export const DEFAULT_CONFIG = {};
 
@@ -45,6 +45,7 @@ function dealHand(state, events) {
     trickHistory: [],
     heartsBroken: false,
     trumpBroken: false,
+    trumpRun: null, // koz A-K-Q imtiyaz serisi: { seat, need }
   };
   state.phase = 'CONTRACT_SELECT';
   state.turn = state.declarer;
@@ -124,6 +125,7 @@ export function applyCommand(prev, cmd) {
       if (!legalCards(h, cmd.seat, state.config).includes(cmd.card)) {
         throw new RuleError('ILLEGAL_CARD', { card: cmd.card });
       }
+      advanceTrumpRun(h, cmd.seat, cmd.card, h.hands[cmd.seat]);
       h.hands[cmd.seat] = h.hands[cmd.seat].filter((c) => c !== cmd.card);
       if (breaksHearts(h.contract.type, h.trick.plays, cmd.card)) h.heartsBroken = true;
       h.trick.plays.push({ seat: cmd.seat, card: cmd.card });
@@ -228,6 +230,8 @@ export function viewFor(state, seat) {
   view.trickHistory = structuredClone(h.trickHistory);
   view.heartsBroken = h.heartsBroken;
   view.trumpBroken = h.trumpBroken;
+  view.tricksTaken = h.takenCards.map((c) => c.length / 4); // alınan el sayıları (herkese açık)
+  view.trumpRun = h.trumpRun ? { seat: h.trumpRun.seat, need: [...h.trumpRun.need] } : null;
   // Ceza kartları önde açık durur: herkes kimin hangi ceza kartını aldığını görür
   view.penaltyTaken = h.contract ? penaltyCardsTaken(h.contract.type, h.takenCards) : [[], [], [], []];
 

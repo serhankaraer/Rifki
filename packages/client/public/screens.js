@@ -147,7 +147,7 @@ function seatPanel(state, seat, pos, trickInfo, actions, now) {
   const offline = s.kind === 'human' && !s.connected;
   const took = trickInfo.finished && trickInfo.winner === seat;
   const isMe = seat === view.seat;
-  const backs = isMe ? null : h('div', { class: 'backs', 'aria-label': `${view.handSizes[seat]}` },
+  const backs = isMe ? null : h('div', { class: `backs ${pos === 'left' || pos === 'right' ? 'vert' : ''}`.trim(), 'aria-label': `${view.handSizes[seat]}` },
     Array.from({ length: view.handSizes[seat] }, () => cardBack('tiny')));
   return h('div', { class: `seat-panel pos-${pos} ${myTurn ? 'turn' : ''} ${took ? 'took' : ''}`.trim(), dataset: { seat } },
     seatNameRow(state, seat, actions, now),
@@ -162,7 +162,7 @@ function seatPanel(state, seat, pos, trickInfo, actions, now) {
 }
 
 /** Üst çubuğun altında yeri sabit durum şeridi (boşken de yer kaplar): King ilerlemesi, koz/kupa kırıldı mı. */
-function statusStrip(state, now) {
+function statusStrip(state) {
   const { view } = state;
   const c = view.contract;
   const items = [];
@@ -172,18 +172,17 @@ function statusStrip(state, now) {
   } else if (c?.type === 'KUPA' || c?.type === 'RIFKI') {
     items.push(view.heartsBroken ? h('span', { class: 'sx green', id: 'broken-note' }, `✅ ${t('game.heartsBroken')}`) : h('span', { class: 'sx amber', id: 'broken-note' }, `🔒 ${t('game.heartsNotBroken')}`));
   }
-  return h('div', { class: 'strip', id: 'status-strip' }, lastTrickBox(state, now), h('div', { class: 'chips', 'aria-live': 'polite' }, items));
+  return h('div', { class: 'strip', id: 'status-strip', 'aria-live': 'polite' }, items);
 }
 
-/** Oyunculardan bağımsız, durum şeridinin solunda hep görünen son biten tur: oynanış sırasıyla 4 kart, kazanan işaretli. */
+/** Oyunculardan bağımsız, masanın sağ alt köşesinde hep görünen son biten tur: oynanış sırasıyla 4 kart (2×2), kazanan işaretli. */
 function lastTrickBox(state, now) {
   const lt = lastTrick(state, now);
   if (!lt) return h('div', { class: 'last-trick empty', 'aria-hidden': 'true' });
   return h('div', { class: 'last-trick', id: 'last-trick' },
     h('div', { class: 'lt-title' }, t('game.lastTrick')),
     h('div', { class: 'lt-cards' }, lt.plays.map((p) => h('div', { class: `lt-play ${p.seat === lt.winner ? 'win' : ''}`.trim(), title: seatName(state.room, p.seat) },
-      cardFace(p.card, 'mini'),
-      h('span', { class: 'lt-who' }, Array.from(seatName(state.room, p.seat))[0] ?? '')))));
+      cardFace(p.card, 'mini')))));
 }
 
 function traitPopover(state, ui, actions) {
@@ -408,11 +407,12 @@ export function tableScreen(state, ui, actions, now) {
       h('span', { class: `turn-note ${yourTurn ? 'mine' : ''}`.trim() }, turnText),
       h('button', { id: 'show-scores', class: 'small', onClick: () => actions.toggleScores() }, t('game.scores')),
       h('button', { id: 'leave', class: 'small danger', onClick: () => actions.leave(true) }, t('game.leave'))),
-    statusStrip(state, now),
+    statusStrip(state),
     h('div', { class: 'board' },
       seatPanel(state, pos.top, 'top', trickInfo, actions, now), seatPanel(state, pos.left, 'left', trickInfo, actions, now), seatPanel(state, pos.right, 'right', trickInfo, actions, now),
       h('div', { class: 'center' }, centerContent(state, trickInfo)),
       seatPanel(state, pos.bottom, 'bottom', trickInfo, actions, now),
+      lastTrickBox(state, now),
       boardLayer(state, ui, actions, now),
       traitPopover(state, ui, actions)),
     myHand(state, actions),

@@ -41,7 +41,7 @@ Ortam değişkenleri: `PORT` (3001), `CLIENT_DIR`, `RIFKI_CONFIG` (JSON, örn. `
 - Oyun sonunda puanı sıfırın üstünde olanlar kazanır (🏆), diğerleri kaybeder (😞).
 - Bot düşünme süresi, sırası geldiğinde toplam 1–3 sn (düşünme hızı özelliğine göre). Yasal tek kartı olan bot tam 1 sn'de oynar (`singleCardMs`).
 - İnsan oyuncunun hamle süresi 30 sn (`turnMs`): dolunca yerine bot oynar (kart ya da sözleşme seçimi) ve `TIMEOUT_PLAY` olayı yayınlanır. Son 10 sn oyuncunun adının yanında azalan çubuk ve kalan saniye görünür (`TURN_TIMER {seat, ms}` mesajı). Yerine oynayan botun karakteri, o an puanı en yüksek olan botun özellikleridir (eşitlikte rastgele; botsuz odada tüm özellikler 50).
-- Bot adına tıklayınca karakter özellikleri açılır. Son biten tur, oyunculardan bağımsız olarak üst çubuğun altındaki şeridin solunda her zaman görünür.
+- Bot adına tıklayınca karakter özellikleri açılır. Son biten tur, oyunculardan bağımsız olarak masanın sağ alt köşesinde (1×4; sağdaki oyuncu kutusunun altında, alttaki oyuncu kutusunun sağında) her zaman görünür.
 - Puan cetveli: kalan tüm cezayı yese bile puanı > 0 kalan oyuncunun sütunu açık yeşil (🏆 kesin çıkar), kalan tüm kozu alsa bile puanı ≤ 0 olan oyuncunun sütunu açık kırmızı (😞 kesin batar); altta açıklama çıkar. Oynanmakta olan el de "kalan" sayılır (`certainStatus`, `sheet.js`).
 - Bağlantı kopunca 30 sn beklenir, sonra bot devralır; insan sonraki elin başında koltuğunu geri alır. Hiç insan kalmazsa botlar oyunu hızla bitirir, oda 5 dk sonra silinir.
 - Sunucu otoriterdir; her oyuncuya yalnızca kendi görebildiği durum (`viewFor`) gönderilir.

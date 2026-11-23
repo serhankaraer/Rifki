@@ -380,3 +380,54 @@ test('ilan edenin sözleşmesi elini ele verir: koz ilan eden rakip daha çok ko
   const none = meanTrumps(1);
   assert.ok(strong > none + 0.5, `çıkarım=100: ${strong}, çıkarım=1: ${none}`);
 });
+
+// ---- botlar kurallara uyar (bağımsız denetçi) ----
+test('botlar uç karakter değerlerinde bile renge uyar ve rengi yoksa ceza kartı atar (Kız/Erkek/Kupa/Rıfkı)', () => {
+  const T = (v, o = {}) => traitsAll(v, o);
+  const profiles = [T(1), T(100), T(50, { tracking: 1, inference: 1, consistency: 1 }), T(50, { risk: 100, aggression: 100, consistency: 1 }), T(1, { consistency: 1, tracking: 1 })];
+  const penalty = { KIZ: (c) => c[0] === 'Q', ERKEK: (c) => c[0] === 'K' || c[0] === 'J', KUPA: (c) => suitOf(c) === 'H' };
+  let offSuit = 0, checked = 0;
+  for (let g = 0; g < 3; g++) {
+    const seed = `rules${g}`;
+    const bots = [0, 1, 2, 3].map((s) => createBot({ profile: { id: `s${s}`, name: `s${s}`, traits: profiles[(g + s) % profiles.length] }, seed: `${seed}:${s}`, simsScale: 0.1 }));
+    let { state } = createGame({ seed });
+    for (let guard = 0; state.phase !== 'GAME_OVER'; guard++) {
+      assert.ok(guard < 6000, 'takıldı');
+      if (state.phase === 'HAND_SCORED') { state = applyCommand(state, { type: 'NEXT_HAND' }).state; continue; }
+      const seat = state.turn;
+      const cmd = bots[seat].act(viewFor(state, seat));
+      if (cmd.type === 'PLAY_CARD') {
+        const { hands, trick, contract } = state.hand;
+        const hand = hands[seat];
+        if (trick.plays.length > 0 && contract.type !== 'KOZ') {
+          checked++;
+          const led = suitOf(trick.plays[0].card);
+          const hasLed = hand.some((c) => suitOf(c) === led);
+          if (hasLed) assert.equal(suitOf(cmd.card), led, `${contract.type}: rengi var ama uymadı (${hand} / ${cmd.card})`);
+          else {
+            offSuit++;
+            const pen = penalty[contract.type];
+            if (pen && hand.some(pen)) assert.ok(pen(cmd.card), `${contract.type}: ceza kartı atmadı (${hand} / ${cmd.card})`);
+          }
+        }
+      }
+      state = applyCommand(state, cmd).state;
+    }
+  }
+  assert.ok(checked > 500 && offSuit > 50, `yeterli örnek (${checked}/${offSuit})`);
+});
+
+// ---- bot gücü etiketi ----
+test('botStrength: 5 kategori, normal dağılımlı botların yaklaşık %10/20/40/20/10\'u; güçlü özellikler daha yüksek kategoriye düşer', async () => {
+  const { botStrength, botStrengthScore, sampleTraits } = await import('../src/index.js');
+  const rng = createRng('strength-test');
+  const N = 20000;
+  const counts = [0, 0, 0, 0, 0];
+  for (let i = 0; i < N; i++) counts[botStrength(sampleTraits(rng)) - 1]++;
+  [0.1, 0.2, 0.4, 0.2, 0.1].forEach((p, i) => assert.ok(Math.abs(counts[i] / N - p) < 0.025, `kategori ${i + 1}: ${counts[i] / N}`));
+  assert.equal(botStrength(traitsAll(1)), 1);
+  assert.equal(botStrength(traitsAll(100, { risk: 50 })), 5);
+  assert.ok(botStrengthScore(traitsAll(50, { lookahead: 100 })) > botStrengthScore(traitsAll(50, { inference: 100 })), 'ileri hesap çıkarımdan daha etkili');
+  assert.ok(botStrengthScore(traitsAll(50, { risk: 100 })) < botStrengthScore(traitsAll(50)), 'yüksek risk güç kaybettirir');
+  assert.equal(botStrengthScore(traitsAll(50, { aggression: 1, scoreAwareness: 100, thinkSpeed: 1 })), botStrengthScore(traitsAll(50)), 'tarz özellikleri güce etki etmez');
+});

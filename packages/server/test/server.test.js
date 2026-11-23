@@ -62,6 +62,7 @@ test('bot ekleme/çıkarma: yalnız oda sahibi; botların özellikleri lobide g�
   for (const b of seats.slice(2)) {
     assert.ok(b.name && (b.gender === 'F' || b.gender === 'M'));
     assert.equal(Object.keys(b.traits).length, 9);
+    assert.ok(Number.isInteger(b.strength) && b.strength >= 1 && b.strength <= 5, 'bot gücü etiketi (1-5)');
     for (const v of Object.values(b.traits)) assert.ok(v >= 1 && v <= 100);
   }
   assert.notEqual(seats[2].name, seats[3].name);

@@ -31,7 +31,21 @@ export class RuleError extends Error {
 
 const nextSeat = (s) => (s + 1) % 4;
 
-function dealHand(state, events) {
+/** Oyun kaydına bir el ekler (el bittiğinde ya da King ile oyun kesildiğinde). */
+function logHand(state, extra) {
+  const h = state.hand;
+  (state.handLog ??= []).push({
+    handNo: state.handNo,
+    declarer: state.declarer,
+    contract: { ...h.contract },
+    redeals: structuredClone(h.redeals ?? []),
+    deal: structuredClone(h.deal ?? null),
+    tricks: structuredClone(h.trickHistory),
+    ...extra,
+  });
+}
+
+function dealHand(state, events, redealsSoFar = []) {
   const rng = createRng(state.redeals > 0 ? `${state.seed}:hand:${state.handNo}:redeal${state.redeals}` : `${state.seed}:hand:${state.handNo}`);
   const deck = shuffle(makeDeck(), rng);
   const hands = [0, 1, 2, 3].map((i) => sortHand(deck.slice(i * 13, i * 13 + 13)));
@@ -46,6 +60,8 @@ function dealHand(state, events) {
     trickNo: 0,
     takenCards: [[], [], [], []],
     trickHistory: [],
+    deal: hands.map((x) => [...x]), // oyun kaydı için ilk dağıtım
+    redeals: redealsSoFar,        // bu elde yapılan yeniden dağıtımlar (oyun kaydı)
     heartsBroken: false,
     trumpBroken: false,
     trumpRun: null, // koz A-K-Q imtiyaz serisi: { seat, need }
@@ -70,6 +86,7 @@ export function createGame({ seed, config = {} } = {}) {
     scores: [0, 0, 0, 0],
     ledger: newLedger(),
     handResults: [],
+    handLog: [], // oyun kaydı: biten (ve King ile kesilen) ellerin tam dökümü; yalnız oyun bitince görünümde yer alır
     hand: null,
   };
   const events = [{ type: 'GAME_STARTED', seed: state.seed }];
@@ -106,7 +123,7 @@ export function applyCommand(prev, cmd) {
         const reveals = redealSeats.map((seat) => ({ seat, hand: [...state.hand.hands[seat]] }));
         state.redeals += 1;
         events.push({ type: 'REDEALT', handNo: state.handNo, reason: 'RIFKI_LONE_HEART_HONOR', declarer: cmd.seat, reveals });
-        dealHand(state, events);
+        dealHand(state, events, [...state.hand.redeals, { declarer: cmd.seat, reason: 'RIFKI_LONE_HEART_HONOR', deal: state.hand.deal }]);
         break;
       }
       recordContract(state.ledger, cmd.seat, cmd.contract);
@@ -166,6 +183,7 @@ export function applyCommand(prev, cmd) {
           state.phase = 'GAME_OVER';
           state.turn = null;
           state.kingEnd = { declarer: state.declarer, success, handNo: state.handNo, tricks: mine, tricksPlayed: h.trickNo };
+          logHand(state, { deltas: null, scoresAfter: [...state.scores], kingEnd: true });
           const winnersSeats = [0, 1, 2, 3].filter((s) => (s === state.declarer) === success);
           events.push({ type: 'KING_ENDED', ...state.kingEnd });
           events.push({ type: 'GAME_ENDED', scores: [...state.scores], winners: winnersSeats, king: true });
@@ -184,6 +202,7 @@ export function applyCommand(prev, cmd) {
       const winners = h.trickHistory.map((t) => t.winner);
       const deltas = scoreHand(h.contract, h.takenCards, winners);
       for (let i = 0; i < 4; i++) state.scores[i] += deltas[i];
+      logHand(state, { deltas, scoresAfter: [...state.scores], earlyEnd });
       state.handResults.push({
         handNo: state.handNo,
         declarer: state.declarer,
@@ -246,6 +265,7 @@ export function viewFor(state, seat) {
     config: { ...state.config },
     kingEnd: state.kingEnd ? { ...state.kingEnd } : null,
   };
+  if (state.phase === 'GAME_OVER') view.gameLog = structuredClone(state.handLog ?? []); // tüm eller açılır: yalnız oyun bittiğinde
   const h = state.hand;
   if (!h) return view;
 

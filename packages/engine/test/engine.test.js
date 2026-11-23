@@ -605,3 +605,60 @@ test('Rıfkı yeniden dağıtımı: tetikleyen tüm oyuncuların eski elleri ola
   assert.deepEqual(ev.reveals[0].hand, hands[o[0]]);
   assert.equal(ev.declarer, d);
 });
+
+test('oyun kaydı: oyun bitince tüm elleri, dağıtımları ve turları içerir; oyun sürerken görünümde yoktur', () => {
+  const rng = createRng('log-test');
+  let { state } = createGame({ seed: 'logseed' });
+  let sawEarly = false;
+  for (let guard = 0; state.phase !== 'GAME_OVER'; guard++) {
+    assert.ok(guard < 5000);
+    if (viewFor(state, 0).gameLog) sawEarly = true;
+    if (state.phase === 'HAND_SCORED') { state = applyCommand(state, { type: 'NEXT_HAND' }).state; continue; }
+    const opts = currentOptions(state);
+    let cmd;
+    if (opts.kind === 'CHOOSE_CONTRACT') {
+      cmd = opts.penalties.length ? { type: 'CHOOSE_CONTRACT', seat: opts.seat, contract: opts.penalties[Math.floor(rng() * opts.penalties.length)] } : { type: 'CHOOSE_CONTRACT', seat: opts.seat, contract: 'KOZ', trump: 'S' };
+    } else cmd = { type: 'PLAY_CARD', seat: opts.seat, card: opts.cards[Math.floor(rng() * opts.cards.length)] };
+    state = applyCommand(state, cmd).state;
+  }
+  assert.equal(sawEarly, false, 'oyun sürerken başkalarının elleri sızmaz');
+  const log = viewFor(state, 2).gameLog;
+  assert.equal(log.length, 20);
+  log.forEach((rec, i) => {
+    assert.equal(rec.handNo, i + 1);
+    assert.equal(rec.deal.length, 4);
+    assert.ok(rec.deal.every((h) => h.length === 13));
+    assert.ok(rec.tricks.length >= 1 && rec.tricks.length <= 13);
+    const hands = rec.deal.map((h) => [...h]);
+    for (const tr of rec.tricks) {
+      assert.equal(tr.plays.length, 4);
+      assert.equal(tr.plays[0].seat, tr.leader, 'ilk kartı açan koltuk');
+      for (const p of tr.plays) { // kayıttaki her kart gerçekten o oyuncunun dağıtım elindeydi
+        const idx = hands[p.seat].indexOf(p.card);
+        assert.ok(idx >= 0, `el ${rec.handNo}: ${p.card} koltuk ${p.seat} elinde yok`);
+        hands[p.seat].splice(idx, 1);
+      }
+    }
+    assert.equal(rec.scoresAfter.length, 4);
+  });
+  assert.deepEqual(log[19].scoresAfter, state.scores);
+});
+
+test('oyun kaydı: King ile biten oyunda kesilen el de kayıtta (kingEnd)', () => {
+  const probe = kozGame('king');
+  const d = probe.declarer;
+  const lows = [['2C', '3C', '4C'], ['5C', '6C', '7C'], ['8C', '9C', '10C']];
+  const hands = [[], [], [], []];
+  hands[d] = ['AS', 'KS', 'QS'];
+  [0, 1, 2, 3].filter((x) => x !== d).forEach((x, i) => { hands[x] = lows[i]; });
+  let { state: s } = kingState({ declarerTricks: 10, trickNo: 10, hands });
+  for (const seat of [d, (d + 1) % 4, (d + 2) % 4, (d + 3) % 4]) {
+    s = applyCommand(s, { type: 'PLAY_CARD', seat, card: seat === d ? 'AS' : s.hand.hands[seat][0] }).state;
+  }
+  const log = viewFor(s, 0).gameLog;
+  assert.equal(log.length, 1);
+  assert.equal(log[0].kingEnd, true);
+  assert.equal(log[0].deltas, null);
+  assert.equal(log[0].contract.king, true);
+  assert.equal(log[0].tricks.at(-1).winner, d);
+});

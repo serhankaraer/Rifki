@@ -128,3 +128,28 @@ export function seatHandNotes(handResults, scores, contract, kingEnd = null, han
     return k <= u.total ? { lose: { type: contract.type, k } } : null;
   });
 }
+
+/**
+ * Son 4 elde, kalan ceza ve koz haklarına göre her oyuncunun durumu — 7 sınıf:
+ *   'win' kesin çıkar | 'win2' çıkmaya çok yakın | 'win1' çıkmaya yakın | 'mid' ortada | 'lose1' batmaya yakın | 'lose2' batmaya çok yakın | 'lose' kesin batar
+ * Kesin sonuçlar certainStatus'tan gelir. Diğerleri için tahmin: kalan koz puanı (hak * 650) ile kalan ceza puanı
+ * oyuncular arasında eşit paylaşılırsa son puan:
+ *   tahmin = puan + (kalanKoz*650 - kalanCeza) / 4;  ölçek = (kalanKoz*650 + kalanCeza) / 4;  oran = tahmin / ölçek
+ *   oran > 0.5 'win2', > 0.15 'win1', >= -0.15 'mid', > -0.5 'lose1', aksi 'lose2'
+ * Dönen (koltuk başına): { level, estimate } ya da null (son 4 el değil / King bitti).
+ */
+export const TREND_LEVELS = ['win', 'win2', 'win1', 'mid', 'lose1', 'lose2', 'lose'];
+export function seatTrend(handResults, scores, kingEnd = null, handNo = 0) {
+  if (kingEnd || !isLastHands(handNo)) return scores.map(() => null);
+  const status = certainStatus(handResults, scores, null);
+  const { remainingPenalty, remainingKoz } = remainingOf(handResults);
+  const kozPts = remainingKoz * SHEET_KOZ_HAND_MAX;
+  const scale = Math.max(1, (kozPts + remainingPenalty) / 4);
+  return scores.map((sc, i) => {
+    const estimate = Math.round(sc + (kozPts - remainingPenalty) / 4);
+    if (status[i]) return { level: status[i], estimate };
+    const ratio = estimate / scale;
+    const level = ratio > 0.5 ? 'win2' : ratio > 0.15 ? 'win1' : ratio >= -0.15 ? 'mid' : ratio > -0.5 ? 'lose1' : 'lose2';
+    return { level, estimate };
+  });
+}

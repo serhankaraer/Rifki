@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initialState, reduce, seatName, activeTrick, nextExpiry, pruneExpired, turnCountdown, revealLeft, lastTrick, TRICK_SHOW_MS, TOAST_MS, REVEAL_MS, COUNTDOWN_MS } from '../public/store.js';
 import { relativePositions, positionOf, parseCard, isRed, groupHand } from '../public/cards.js';
-import { buildSheet, finalStandings, certainStatus, seatOutlook, seatHandNotes, isLastHands } from '../public/sheet.js';
+import { buildSheet, finalStandings, certainStatus, seatOutlook, seatHandNotes, seatTrend, isLastHands, TREND_LEVELS } from '../public/sheet.js';
 import { t, setLocale, registerLocale } from '../public/i18n.js';
 import tr from '../public/locales/tr.js';
 import { ERR } from '../../server/src/protocol.js';
@@ -383,4 +383,79 @@ test('seatHandNotes: eşik notları yalnız son 4 elde (17–20) hesaplanır', (
   assert.equal(isLastHands(16), false);
   assert.equal(isLastHands(17), true);
   assert.equal(isLastHands(20), true);
+});
+
+test('seatTrend: son 4 elde 7 sınıf (kesin çıkar … ortada … kesin batar)', () => {
+  // ceza kalmadı, 2 koz eli kaldı (1300 puan): ölçek 325, tahmin = puan + 325
+  const hr = doneHands([...ALL_PEN, ...ALL_PEN, ...Array(6).fill('KOZ')]);
+  const lv = (scores) => seatTrend(hr, scores, null, 19).map((x) => x.level);
+  assert.deepEqual(lv([-200, -600, -400, 0]), ['win1', 'lose2', 'lose1', 'win2']);
+  assert.deepEqual(lv([-325, -300, -380, -250]), ['mid', 'mid', 'lose1', 'win1'], 'oran |0.15| içinde ortada');
+  assert.equal(seatTrend(hr, [10, 0, 0, 0], null, 19)[0].level, 'win', 'ceza kalmadı ve puan > 0: kesin çıkar');
+  assert.equal(seatTrend(hr, [-200, -600, -100, 0], null, 19)[0].estimate, 125);
+  assert.deepEqual(seatTrend(hr, [-200, -600, -100, 0], null, 16), [null, null, null, null], 'son 4 el dışında yok');
+  assert.deepEqual(seatTrend(hr, [-200, -600, -100, 0], { declarer: 0, success: true }, 19), [null, null, null, null]);
+  // kesin sonuçlar da sınıflanır
+  const done = doneHands([...ALL_PEN, ...ALL_PEN, ...Array(8).fill('KOZ')]);
+  assert.deepEqual(seatTrend(done, [100, -100, 0, 50], null, 20).map((x) => x.level), ['win', 'lose', 'lose', 'win']);
+  assert.ok(TREND_LEVELS.includes('mid') && TREND_LEVELS.length === 7);
+});
+
+test('son el (20): koz elinde kaç koz alırsa çıkar, ceza elinde kaç ceza yerse batar (kesin eşik)', () => {
+  // 19 el bitti, 20. el oynanıyor: kalan ceza/koz hakkı yalnız bu el
+  const penHand = doneHands([...ALL_PEN, ...ALL_PEN.filter((x) => x !== 'KIZ'), ...Array(8).fill('KOZ')]); // KIZ'ın 2. eli = 20. el
+  const kiz = seatHandNotes(penHand, [250, 1000, -50, 100], { type: 'KIZ' }, null, 20);
+  assert.deepEqual(kiz[0], { lose: { type: 'KIZ', k: 3 } }, '250: 3 kız (300) yerse batar');
+  assert.equal(kiz[1], null, '1000: 4 kızla (400) bile batmaz');
+  assert.equal(kiz[2], null, 'puanı zaten ≤ 0: kesin batar, eşik notu yok');
+  assert.deepEqual(kiz[3], { lose: { type: 'KIZ', k: 1 } });
+  const kozHand = doneHands([...ALL_PEN, ...ALL_PEN, ...Array(7).fill('KOZ')]); // 20. el = son koz eli
+  const koz = seatHandNotes(kozHand, [-120, 0, -700, 30], { type: 'KOZ' }, null, 20);
+  assert.deepEqual(koz[0], { needKoz: 3 }, '-120: 3 koz (+150) yeter');
+  assert.deepEqual(koz[1], { needKoz: 1 });
+  assert.equal(koz[2], null, '-700: 13 koz (+650) bile yetmez, kesin batar');
+  assert.equal(koz[3], null, 'zaten kesin çıkar');
+});
+
+test('oyun kaydı metni: oyuncular, dağıtım, tur sırası, renk uyarıları ve sonuç', async () => {
+  const { formatGameLog, logFileName } = await import('../public/gamelog.js');
+  const data = {
+    names: ['Serhan', 'Ayşe', 'Hülya', 'Barış'], me: 0, code: 'ABCDE', savedAt: Date.UTC(2026, 10, 23, 14, 40), scores: [-100, 0, 100, 0], kingEnd: null,
+    gameLog: [{
+      handNo: 1, declarer: 1, contract: { type: 'KIZ', trump: null }, redeals: [],
+      deal: [['7H', 'QS'], ['3H', '4S'], ['9H', 'KS'], ['2H', 'AD']],
+      tricks: [
+        { trickNo: 1, leader: 1, plays: [{ seat: 1, card: '3H' }, { seat: 2, card: '9H' }, { seat: 3, card: '2H' }, { seat: 0, card: 'QS' }], winner: 2 }, // Serhan'ın kupası vardı!
+        { trickNo: 2, leader: 2, plays: [{ seat: 2, card: 'KS' }, { seat: 3, card: 'AD' }, { seat: 0, card: '7H' }, { seat: 1, card: '4S' }], winner: 2 },
+      ],
+      deltas: [-100, 0, 0, 0], scoresAfter: [-100, 0, 0, 0], earlyEnd: false,
+    }],
+  };
+  const txt = formatGameLog(data);
+  assert.match(txt, /Oda: ABCDE/);
+  assert.match(txt, /0=Serhan \(sen\), 1=Ayşe/);
+  assert.match(txt, /EL 1\/20 — Seçici: Ayşe — Kız almaz/);
+  assert.match(txt, /Serhan\s+♥7 ♠Q/, 'dağıtım');
+  assert.match(txt, /Tur 1 \[açan: Ayşe\]\s+Ayşe ♥3\s+→\s+Hülya ♥9\s+→\s+Barış ♥2\s+→\s+Serhan ♠Q ⚠RENGİ VARDI\s+⇒ alan: Hülya/, 'oynanış sırası + uyarı');
+  assert.match(txt, /Barış ♦A \(rengi yok\)/, 'rengi olmayan oyuncu işaretlenir');
+  assert.match(txt, /El sonucu: Serhan -100 \| Ayşe 0/);
+  assert.match(logFileName(data), /^rifki-kayit-ABCDE-20261123-\d{4}\.txt$/);
+});
+
+test('oyun kaydı ızgarası: kim açtı, kim aldı, rengi yok / rengi vardı, ceza kartı, oynanış sırası', async () => {
+  const { buildHandGrid } = await import('../public/gamelog.js');
+  const rec = {
+    handNo: 3, declarer: 1, contract: { type: 'KIZ', trump: null }, redeals: [],
+    deal: [['7H', 'QS'], ['3H', '4S'], ['9H', 'KS'], ['2H', 'AD']],
+    tricks: [
+      { trickNo: 1, leader: 1, plays: [{ seat: 1, card: '3H' }, { seat: 2, card: '9H' }, { seat: 3, card: '2H' }, { seat: 0, card: 'QS' }], winner: 2 },
+      { trickNo: 2, leader: 2, plays: [{ seat: 2, card: 'KS' }, { seat: 3, card: 'AD' }, { seat: 0, card: '7H' }, { seat: 1, card: '4S' }], winner: 2 },
+    ],
+  };
+  const g = buildHandGrid(rec);
+  assert.equal(g.length, 2);
+  assert.deepEqual(g[0].cells[1], { card: '3H', order: 1, lead: true, win: false, noSuit: false, hadSuit: false, penalty: false });
+  assert.equal(g[0].cells[2].win, true);
+  assert.deepEqual([g[0].cells[0].hadSuit, g[0].cells[0].noSuit, g[0].cells[0].penalty], [true, false, true], 'Serhan\'ın kupası vardı ama maça kızı attı');
+  assert.deepEqual([g[1].cells[3].hadSuit, g[1].cells[3].noSuit], [false, true], 'Barış\'ın maçası yok');
 });

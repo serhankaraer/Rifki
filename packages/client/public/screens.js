@@ -2,7 +2,8 @@
 import { h } from './ui.js';
 import { t } from './i18n.js';
 import { SUIT_SYMBOL, SUITS, parseCard, isRed, relativePositions, groupHand } from './cards.js';
-import { buildSheet, finalStandings, certainStatus, seatOutlook, seatHandNotes, isLastHands, SHEET_CEZA_RIGHTS, SHEET_KOZ_RIGHTS } from './sheet.js';
+import { buildSheet, finalStandings, certainStatus, seatOutlook, seatHandNotes, seatTrend, isLastHands, SHEET_CEZA_RIGHTS, SHEET_KOZ_RIGHTS } from './sheet.js';
+import { formatGameLog, buildHandGrid, cardText, handText, contractLabel } from './gamelog.js';
 import { seatName, activeTrick, lastTrick, turnCountdown, revealLeft, COUNTDOWN_MS, REVEAL_MS } from './store.js';
 
 const CONTRACT_ORDER = ['RIFKI', 'KIZ', 'ERKEK', 'KUPA', 'SON_IKI', 'EL_ALMAZ'];
@@ -54,10 +55,19 @@ export function homeScreen(state, ui, actions) {
     h('label', { for: 'code' }, t('home.roomCode')), code,
     h('button', { id: 'join', disabled: busy, onClick: () => actions.joinRoom() }, t('home.join')),
     h('p', { class: 'muted small' }, t('home.hint')),
+    ui.lastLog ? h('button', { id: 'last-log', class: 'small', onClick: () => actions.openStoredLog() }, t('log.lastGame')) : null,
     toasts(state));
 }
 
 // ---------- lobi ----------
+/** Bot gücü etiketi: 5 çubuklu gösterge + kategori adı (çok zayıf … çok güçlü). */
+function strengthBadge(level) {
+  if (!level) return null;
+  return h('span', { class: `strength s${level}`, dataset: { strength: level }, title: t('strength.title') },
+    h('span', { class: 'meter', 'aria-hidden': 'true' }, [1, 2, 3, 4, 5].map((i) => h('i', { class: i <= level ? 'on' : '' }))),
+    h('span', { class: 'lab' }, t(`strength.${level}`)));
+}
+
 function traitBars(traits) {
   return h('div', { class: 'traits' },
     TRAIT_ORDER.map((k) => h('div', { class: 'trait' },
@@ -85,8 +95,11 @@ export function lobbyScreen(state, ui, actions) {
         h('span', { class: 'seat-no' }, t('lobby.seat', { n: i + 1 })),
         h('span', { class: 'seat-name' }, s.name),
         h('span', { class: 'chip' }, `🤖 ${t('lobby.bot')}`),
-        isHost ? h('button', { class: 'small danger', onClick: () => actions.removeBot(i) }, t('lobby.removeBot')) : null),
-      traitBars(s.traits));
+        h('div', { class: 'seat-sub' },
+          strengthBadge(s.strength),
+          h('button', { class: 'small', dataset: { toggleTraits: i }, 'aria-expanded': String(!!ui.lobbyTraits?.[i]), onClick: () => actions.toggleLobbyTraits(i) }, t(ui.lobbyTraits?.[i] ? 'lobby.hideTraits' : 'lobby.showTraits')),
+          isHost ? h('button', { class: 'small danger', onClick: () => actions.removeBot(i) }, t('lobby.removeBot')) : null)),
+      ui.lobbyTraits?.[i] ? traitBars(s.traits) : null);
   });
   return h('main', { class: 'lobby' },
     connBanner(state),
@@ -139,7 +152,7 @@ function seatNameRow(state, seat, actions, now, outlook, score = null) {
     cd ? h('span', { class: 'cd-bar', 'aria-hidden': 'true' }, h('i', { style: { animationDelay: `-${((COUNTDOWN_MS - cd.leftMs) / 1000).toFixed(2)}s` } })) : null);
 }
 
-function seatPanel(state, seat, pos, trickInfo, actions, now, outlooks, handNotes) {
+function seatPanel(state, seat, pos, trickInfo, actions, now, outlooks, handNotes, trends) {
   const { view, room } = state;
   const s = room.seats[seat];
   const myTurn = view.turn === seat && (view.phase === 'PLAYING' || view.phase === 'CONTRACT_SELECT');
@@ -157,6 +170,7 @@ function seatPanel(state, seat, pos, trickInfo, actions, now, outlooks, handNote
   const showScore = late && view.scores;
   return h('div', { class: `seat-panel pos-${pos} ${myTurn ? 'turn' : ''} ${took ? 'took' : ''} ${certCls}`.replace(/\s+/g, ' ').trim(), dataset: { seat, ...(outlook.status ? { certain: outlook.status } : {}) } },
     seatNameRow(state, seat, actions, now, outlook, showScore ? view.scores[seat] : null),
+    trends[seat] ? h('div', { class: `sp-trend ${trends[seat].level}`, dataset: { trend: trends[seat].level }, title: t('game.trendTitle', { n: trends[seat].estimate }) }, t(`game.trend.${trends[seat].level}`)) : null,
     h('div', { class: 'sp-icons' },
       h('span', { class: `ico ${isBot ? '' : 'off'}`, title: t('game.bot') }, '🤖'),
       h('span', { class: `ico ${seat === view.declarer ? '' : 'off'}`, title: t('game.declarer') }, '★'),
@@ -219,7 +233,7 @@ function traitPopover(state, ui, actions) {
   if (!s || s.kind !== 'bot') return null;
   return h('div', { class: 'overlay-in clear', id: 'trait-layer', onClick: (e) => { if (e.target === e.currentTarget) actions.toggleTraits(ui.traitSeat); } },
     h('div', { class: 'trait-pop', role: 'dialog', 'aria-label': `${s.name} — ${t('game.traitsTitle')}` },
-      h('h4', null, h('span', null, `🤖 ${s.name}`), h('button', { class: 'small', id: 'close-traits', 'aria-label': t('game.close'), onClick: () => actions.toggleTraits(ui.traitSeat) }, '✕')),
+      h('h4', null, h('span', { class: 'pop-title' }, `🤖 ${s.name}`, strengthBadge(s.strength)), h('button', { class: 'small', id: 'close-traits', 'aria-label': t('game.close'), onClick: () => actions.toggleTraits(ui.traitSeat) }, '✕')),
       traitBars(s.traits)));
 }
 
@@ -230,7 +244,10 @@ function trickArea(state, trickInfo) {
   const slot = (name) => {
     const seat = pos[name];
     const play = plays.find((p) => p.seat === seat);
-    return h('div', { class: `slot slot-${name} ${finished && winner === seat ? 'winner' : ''}`.trim() }, play ? cardFace(play.card) : null);
+    const lead = plays.length > 0 && plays[0].seat === seat;
+    return h('div', { class: `slot slot-${name} ${finished && winner === seat ? 'winner' : ''} ${lead ? 'lead' : ''}`.replace(/\s+/g, ' ').trim() },
+      play ? cardFace(play.card) : null,
+      lead ? h('span', { class: 'lead-tag' }, t('game.led')) : null);
   };
   return h('div', { class: 'trick' }, ['top', 'left', 'right', 'bottom'].map(slot));
 }
@@ -284,6 +301,7 @@ function gameOverLayer(state, actions) {
         h('span', { class: `num ${score < 0 ? 'neg' : score > 0 ? 'pos' : ''}` }, score)))),
       h('div', { class: 'row-btns' },
         h('button', { id: 'final-sheet', onClick: () => actions.toggleScores() }, t('game.scores')),
+        view.gameLog ? h('button', { id: 'open-log', onClick: () => actions.openLog() }, t('log.open')) : null,
         h('button', { class: 'primary', onClick: () => actions.leave(false) }, t('game.back')))));
 }
 
@@ -304,6 +322,7 @@ function kingEndLayer(state, actions) {
         h('span', { class: `num ${won ? 'pos' : 'neg'}` }, t(won ? 'game.cikti' : 'game.batti'))))),
       h('div', { class: 'row-btns' },
         h('button', { id: 'final-sheet', onClick: () => actions.toggleScores() }, t('game.scores')),
+        view.gameLog ? h('button', { id: 'open-log', onClick: () => actions.openLog() }, t('log.open')) : null,
         h('button', { class: 'primary', onClick: () => actions.leave(false) }, t('game.back')))));
 }
 
@@ -428,6 +447,7 @@ export function tableScreen(state, ui, actions, now) {
   const trickInfo = activeTrick(state, now);
   const yourTurn = view.turn === view.seat && (view.phase === 'PLAYING' || view.phase === 'CONTRACT_SELECT');
   const outlooks = seatOutlook(view.handResults, view.scores, view.kingEnd);
+  const trends = view.phase === 'PLAYING' ? seatTrend(view.handResults, view.scores, view.kingEnd, view.handNo) : view.scores.map(() => null);
   const handNotes = view.phase === 'PLAYING' ? seatHandNotes(view.handResults, view.scores, view.contract, view.kingEnd, view.handNo) : view.scores.map(() => null);
   const turnText = yourTurn ? t('game.yourTurn') : (view.turn !== null && view.turn !== undefined ? t('game.waitingFor', { name: seatName(room, view.turn) }) : '');
   return h('main', { class: 'game' },
@@ -441,9 +461,9 @@ export function tableScreen(state, ui, actions, now) {
       h('button', { id: 'show-scores', class: 'small', 'aria-label': t('game.scores'), title: t('game.scores'), onClick: () => actions.toggleScores() }, h('span', { class: 'lg' }, t('game.scores')), h('span', { class: 'sm' }, '📊')),
       h('button', { id: 'leave', class: 'small danger', 'aria-label': t('game.leave'), title: t('game.leave'), onClick: () => actions.leave(true) }, h('span', { class: 'lg' }, t('game.leave')), h('span', { class: 'sm' }, '✕'))),
     h('div', { class: 'board' },
-      seatPanel(state, pos.top, 'top', trickInfo, actions, now, outlooks, handNotes), seatPanel(state, pos.left, 'left', trickInfo, actions, now, outlooks, handNotes), seatPanel(state, pos.right, 'right', trickInfo, actions, now, outlooks, handNotes),
+      seatPanel(state, pos.top, 'top', trickInfo, actions, now, outlooks, handNotes, trends), seatPanel(state, pos.left, 'left', trickInfo, actions, now, outlooks, handNotes, trends), seatPanel(state, pos.right, 'right', trickInfo, actions, now, outlooks, handNotes, trends),
       h('div', { class: 'center' }, centerContent(state, trickInfo)),
-      seatPanel(state, pos.bottom, 'bottom', trickInfo, actions, now, outlooks, handNotes),
+      seatPanel(state, pos.bottom, 'bottom', trickInfo, actions, now, outlooks, handNotes, trends),
       lastTrickBox(state, now),
       boardLayer(state, ui, actions, now),
       traitPopover(state, ui, actions)),
@@ -456,7 +476,65 @@ export function loadingScreen(state) {
   return h('main', { class: 'center-card' }, connBanner(state), h('p', { class: 'muted' }, t('game.loading')), toasts(state));
 }
 
+const initial = (name) => Array.from(name).slice(0, 2).join('');
+
+function logCard(c) {
+  const red = c.card.endsWith('H') || c.card.endsWith('D');
+  return h('span', { class: `lc ${red ? 'r' : ''} ${c.penalty ? 'pen' : ''}`.replace(/\s+/g, ' ').trim() }, h('sup', { class: 'o' }, c.order), cardText(c.card));
+}
+
+function handGrid(data, rec, order, on) {
+  const { names, me } = data;
+  const rows = buildHandGrid(rec);
+  const cols = order.map((seat) => seat);
+  const cut = !!rec.kingEnd;
+  return h('section', { class: `hand-grid ${on ? 'on' : ''}`.trim(), dataset: { hand: rec.handNo } },
+    h('div', { class: 'hg-head' },
+      h('strong', null, t('log.hand', { n: rec.handNo, total: 20 })),
+      h('span', null, contractLabel(rec.contract)),
+      h('span', { class: 'tag-dec' }, `${t('log.declarer')}: ${names[rec.declarer]}`),
+      rec.deltas ? h('span', { class: 'muted small' }, names.map((n, i) => `${n} ${rec.deltas[i] > 0 ? '+' : ''}${rec.deltas[i]}`).join(' · ')) : null),
+    (rec.redeals ?? []).map((rd, i) => h('p', { class: 'hg-note small muted' }, `${t('log.redealShort', { n: i + 1, name: names[rd.declarer] })}  ${rd.deal.map((cards, s) => `${names[s]}: ${handText(cards)}`).join(' | ')}`)),
+    h('table', null,
+      h('thead', null, h('tr', null, h('th', null, ''), cols.map((seat) => h('th', { class: seat === rec.declarer ? 'dec' : '' },
+        seat === me ? `${names[seat]} ${t('log.you')}` : names[seat], seat === rec.declarer ? h('small', null, t('log.declarerShort')) : null)))),
+      h('tbody', null,
+        h('tr', { class: 'deal' }, h('td', null, t('log.deal')), cols.map((seat) => h('td', null, handText(rec.deal[seat])))),
+        rows.map((r) => h('tr', null, h('td', null, t('log.trick', { n: r.n })),
+          cols.map((seat) => {
+            const c = r.cells[seat];
+            if (!c) return h('td', null, '');
+            return h('td', { class: `cell ${c.win ? 'win' : ''} ${c.lead ? 'lead' : ''}`.replace(/\s+/g, ' ').trim() },
+              c.lead ? h('span', { class: 'dot', title: t('log.leads') }) : null, logCard(c),
+              c.noSuit ? h('span', { class: 'no' }, t('log.noSuit')) : null,
+              c.hadSuit ? h('span', { class: 'no warn' }, `⚠ ${t('log.hadSuit')}`) : null);
+          }))),
+        cut ? h('tr', { class: 'res' }, h('td', { colspan: 5 }, t('log.kingCut')))
+          : [h('tr', { class: 'res' }, h('td', null, t('log.result')), cols.map((seat) => h('td', null, rec.deltas[seat] > 0 ? `+${rec.deltas[seat]}` : rec.deltas[seat]))),
+            h('tr', { class: 'res' }, h('td', null, t('log.total')), cols.map((seat) => h('td', null, rec.scoresAfter[seat])))])));
+}
+
+/** Oyun kaydı ekranı: el seçicili ızgara (sütun = oyuncu, satır = tur); yazdırma, kopyalama ve .txt indirme düğmeleri vardır. */
+export function logScreen(data, ui, actions) {
+  const order = [0, 1, 2, 3].map((i) => (data.me + i) % 4);
+  const sel = data.gameLog.some((r) => r.handNo === ui.logHand) ? ui.logHand : data.gameLog[0]?.handNo;
+  return h('main', { class: 'log-screen' },
+    h('div', { class: 'log-bar' },
+      h('button', { id: 'log-back', class: 'small', onClick: () => actions.closeLog() }, `← ${t('log.back')}`),
+      h('button', { id: 'log-print', class: 'small', onClick: () => actions.printLog() }, t('log.print')),
+      h('button', { id: 'log-copy', class: 'small', onClick: () => actions.copyLog() }, ui.logCopied ? t('log.copied') : t('log.copy')),
+      h('button', { id: 'log-download', class: 'small primary', onClick: () => actions.downloadLog() }, t('log.download'))),
+    h('p', { class: 'log-sum small muted' }, `${t('log.room')} ${data.code ?? '-'} · ${t('log.finalScores')}: ${data.names.map((n, i) => `${n} ${data.scores?.[i] ?? 0}`).join(' | ')}`),
+    h('div', { class: 'log-chips', role: 'tablist', 'aria-label': t('log.hands') },
+      data.gameLog.map((rec) => h('button', { class: `log-chip ${rec.handNo === sel ? 'on' : ''} ${rec.kingEnd ? 'king' : ''}`.replace(/\s+/g, ' ').trim(), dataset: { hand: rec.handNo }, role: 'tab', 'aria-selected': String(rec.handNo === sel),
+        title: `${contractLabel(rec.contract)} — ${data.names[rec.declarer]}`, onClick: () => actions.selectLogHand(rec.handNo) },
+        String(rec.handNo), h('small', null, initial(data.names[rec.declarer]))))),
+    data.gameLog.map((rec) => handGrid(data, rec, order, rec.handNo === sel)),
+    h('p', { class: 'log-leg small muted' }, t('log.gridLegend')));
+}
+
 export function renderScreen(state, ui, actions, now) {
+  if (ui.logData) return logScreen(ui.logData, ui, actions);
   if (state.fatal) return fatalScreen(state);
   if (!state.session || !state.room) return homeScreen(state, ui, actions);
   if (state.room.phase === 'LOBBY') return lobbyScreen(state, ui, actions);

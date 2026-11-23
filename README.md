@@ -76,3 +76,21 @@ Not: rakiplerin gerçek elini bilen hileli bir bot normal bottan iyi değildir; 
 ## Dokunmatik ekran
 - Basılı tutunca tarayıcının bağlam menüsü ve metin seçimi engellenir (`contextmenu`/`selectstart` iptal, CSS `user-select:none`, `touch-action:manipulation`); yazı alanları ve oda kodu hariç.
 - Masa üst çubuğundaki ⛶ düğmesi tam ekrana geçer/çıkar (Fullscreen API): tarayıcının sekme ve adres çubukları gizlenir, masa büyür. Tarayıcı desteklemiyorsa düğme görünmez.
+
+## Çıkmaya / batmaya yakınlık (son 4 el)
+Son 4 elde (17–20), sonucu henüz kesin olmayan her oyuncunun kutusunda "↗ Çıkmaya (çok) yakın" ya da "↘ Batmaya (çok) yakın" göstergesi çıkar; her elde kalan ceza ve koz haklarına göre yeniden hesaplanır (`seatTrend`, `sheet.js`). Tahmin: kalan koz puanı (hak × 650) ile kalan ceza puanı oyuncular arasında eşit paylaşılırsa son puan = puan + (kalanKoz×650 − kalanCeza) / 4; oran = tahmin / ((kalanKoz×650 + kalanCeza) / 4). Oran > 0,5 çok yakın çıkmaya, > 0 yakın çıkmaya, > −0,5 yakın batmaya, daha düşükse çok yakın batmaya. Göstergenin üzerine gelince (title) tahmini son puan görülür. Bu bir tahmindir; kesin çıkma/batma 🏆/😞 ile ayrıca gösterilir.
+
+## Kural denetimi
+- Motor her `PLAY_CARD` komutunu `legalCards` ile doğrular (`ILLEGAL_CARD`); botlar yalnız `view.legalCards` içinden seçer, bu yüzden hiçbir karakter özelliği (takip, çıkarım, tutarlılık, risk…) kural dışı kart oynatamaz. `ai/test` içindeki "botlar kurallara uyar" testi, uç özellik değerleriyle oynayan botları bağımsız bir denetçiyle (renge uyma + rengi yoksa Kız/Erkek/Kupa cezası atma) kontrol eder.
+- Masada ilk atılan (turu açan) kart kesikli mavi çerçeve ve "açtı" etiketiyle işaretlenir; böylece "bu bot renge uymadı mı?" sorusu kolay kontrol edilir.
+
+## Oyun kaydı (log)
+- Motor, biten her elin (ve King ile kesilen elin) tam dökümünü tutar: ilk dağıtım (dört elin kartları), Rıfkı yeniden dağıtımları, her turun açanı, oynanış sırasıyla kartları ve alanı, el sonucu. Başkalarının elleri sızmasın diye `view.gameLog` yalnızca oyun bittiğinde (`GAME_OVER`) görünümde yer alır.
+- Oyun bitince (ve King bitişinde) "Oyun kaydı" düğmesi kayıt ekranını açar (`client/public/gamelog.js`, `screens.js: logScreen`): üstte el seçici (el no + seçicinin ilk harfleri), altında ızgara — sütun oyuncular (seçicinin sütunu sarı, "seçici" yazar), satır turlar; hücrede atılan kart, turu alan sarı, turu açan mavi nokta, küçük sayı oynanış sırası, ceza kartı çerçeveli. Rengi olmayan oyuncu `rengi yok`, rengi olduğu halde uymayan `⚠ rengi vardı` ile işaretlenir. **Yazdır** tüm elleri (el başına bir ızgara) basar; **Kopyala** ve **İndir (.txt)** aynı ayrıntıyı düz metin olarak verir (`formatGameLog`).
+- Kayıt oyun biter bitmez bu cihazın `localStorage`'ına da yazılır; odadan çıkınca ana ekrandaki "Son oyunun kaydı" düğmesiyle açılır.
+
+## Son 4 elde 7 sınıf
+`seatTrend` (sheet.js) her oyuncuyu şöyle sınıflar: kesin çıkar, çıkmaya çok yakın, çıkmaya yakın, ortada (oran |0,15| içinde), batmaya yakın, batmaya çok yakın, kesin batar. Son elde (20) eşik notları kesindir: koz elinde `en az N koz almalı`, ceza elinde `en az N … yerse batar`.
+
+## Bot gücü etiketi
+`botStrength` (`ai/src/traits.js`): özelliklerden tek bir güç puanı hesaplanır — ölçülen etkilerle ağırlıklı (ileri hesap 500, tutarlılık 500, takip 130, el değerlendirme 100, çıkarım 50; 50 üstü risk en çok −75). Saldırganlık, skor farkındalığı ve düşünme hızı güce etki etmez. Puan, normal dağılımlı üretilen botların %10/%20/%40/%20/%10'unu verecek sabit eşiklerle (`STRENGTH_THRESHOLDS`) 5 etikete çevrilir: çok zayıf, zayıf, orta, güçlü, çok güçlü. Sunucu `seats[].strength` (1–5) olarak gönderir; lobide bot satırında ("Özellikler" düğmesiyle özellik çubukları açılır) ve oyun içinde bot ismine dokununca açılan kutuda görünür. Ağırlıklar ya da bot politikası değişirse eşikleri yeniden hesaplayın (ai testi dağılımı doğrular).

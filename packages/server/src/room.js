@@ -1,7 +1,7 @@
 // Oda: koltuklar, lobi, oyun oturumu, bot zamanlaması, bağlantı kopma / bot devralma.
 // Taşıma (WebSocket) ve zamanlayıcı dışarıdan verilir (ctx) -> tamamen test edilebilir.
 import { createGame, applyCommand, viewFor, RuleError } from '@rifki/engine';
-import { createBot, createBotProfiles, TRAIT_KEYS } from '@rifki/ai';
+import { createBot, createBotProfiles, TRAIT_KEYS, botStrength } from '@rifki/ai';
 import { S2C, ERR, ServerError, nickKey } from './protocol.js';
 
 const SEATS = 4;
@@ -42,7 +42,7 @@ export class Room {
 
   publicSeat(m) {
     if (!m) return { kind: 'empty' };
-    if (m.kind === 'bot') return { kind: 'bot', name: m.profile.name, gender: m.profile.gender, traits: { ...m.profile.traits } };
+    if (m.kind === 'bot') return { kind: 'bot', name: m.profile.name, gender: m.profile.gender, traits: { ...m.profile.traits }, strength: botStrength(m.profile.traits) };
     return { kind: 'human', nickname: m.nickname, connected: m.connId !== null, botControlled: m.control === 'bot' };
   }
 

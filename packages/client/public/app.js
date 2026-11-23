@@ -1,6 +1,7 @@
 // Giriş noktası: durum + ağ + ekran çizimi. Tüm mantık store.js'te; burada sadece bağlantı ve DOM var.
 import { t, setLocale } from './i18n.js';
-import { initialState, reduce, nextExpiry } from './store.js';
+import { initialState, reduce, nextExpiry, seatName } from './store.js';
+import { formatGameLog, logFileName, LOG_STORAGE_KEY } from './gamelog.js';
 import { createNet } from './net.js';
 import { renderScreen } from './screens.js';
 
@@ -21,15 +22,22 @@ setLocale(navigator.language);
 document.title = t('app.title');
 // Oyun sırasında basılı tutunca tarayıcının bağlam menüsü / metin seçimi çıkmasın (yazı alanları hariç).
 document.addEventListener('contextmenu', (e) => {
-  if (!(e.target instanceof Element) || !e.target.closest('input, textarea')) e.preventDefault();
+  if (!(e.target instanceof Element) || !e.target.closest('input, textarea, .log-text')) e.preventDefault();
 });
 document.addEventListener('selectstart', (e) => {
-  if (!(e.target instanceof Element) || !e.target.closest('input, textarea, .room-code')) e.preventDefault();
+  if (!(e.target instanceof Element) || !e.target.closest('input, textarea, .room-code, .log-text')) e.preventDefault();
 });
+
+function loadLastLog() {
+  try {
+    const d = JSON.parse(localStorage.getItem(LOG_STORAGE_KEY) || 'null');
+    return d && Array.isArray(d.gameLog) && Array.isArray(d.names) ? d : null;
+  } catch { return null; }
+}
 
 let state = initialState(loadSession());
 const hashCode = (location.hash || '').replace('#', '').toUpperCase().slice(0, 5);
-const ui = { form: { nickname: localStorage.getItem('rifki.nick') || '', code: /^[A-Z0-9]{5}$/.test(hashCode) ? hashCode : '' }, showScores: false, copied: false, king: false, traitSeat: null };
+const ui = { form: { nickname: localStorage.getItem('rifki.nick') || '', code: /^[A-Z0-9]{5}$/.test(hashCode) ? hashCode : '' }, showScores: false, copied: false, king: false, traitSeat: null, logData: null, logCopied: false, lobbyTraits: {}, logHand: 1, lastLog: loadLastLog() };
 
 let tickTimer = null;
 let renderQueued = false;
@@ -41,11 +49,28 @@ const net = createNet({
   onMessage: (msg) => dispatch(msg),
 });
 
+// Oyun biter bitmez kaydı bu cihaza yazar (odadan çıkınca da ana ekrandan açılabilsin).
+let loggedFor = null;
+function currentLogData() {
+  const { view, room } = state;
+  if (!view?.gameLog || !room) return null;
+  if (loggedFor !== view.gameLog) { loggedFor = view.gameLog; ui.logSavedAt = Date.now(); }
+  return { names: [0, 1, 2, 3].map((s) => seatName(room, s)), me: view.seat, code: room.code, savedAt: ui.logSavedAt, scores: view.scores, kingEnd: view.kingEnd, gameLog: view.gameLog };
+}
+function persistLog() {
+  if (!state.view?.gameLog || state.view.gameLog === loggedFor) return;
+  const data = currentLogData();
+  if (!data) return;
+  ui.lastLog = data;
+  try { localStorage.setItem(LOG_STORAGE_KEY, JSON.stringify(data)); } catch { /* depolama dolu / kapalı */ }
+}
+
 function dispatch(msg) {
   const prevSession = state.session;
   state = reduce(state, msg, Date.now());
   if (state.session !== prevSession) saveSession(state.session);
-  if (msg.t === 'LEFT_ROOM' || (msg.t === 'ERROR' && msg.code === 'INVALID_TOKEN')) { ui.showScores = false; ui.traitSeat = null; ui.king = false; }
+  persistLog();
+  if (msg.t === 'LEFT_ROOM' || (msg.t === 'ERROR' && msg.code === 'INVALID_TOKEN')) { ui.showScores = false; ui.traitSeat = null; ui.king = false; ui.logData = null; ui.lobbyTraits = {}; }
   if (state.fatal) net.stop();
   scheduleRender();
   scheduleTick();
@@ -115,6 +140,25 @@ const actions = {
     ui.king = false;
     net.send({ t: 'CHOOSE_CONTRACT', contract, ...(trump ? { trump } : {}), ...(king ? { king: true } : {}) });
   },
+  openLog() { const d = currentLogData(); if (d) { ui.logData = d; window.scrollTo(0, 0); scheduleRender(); } },
+  openStoredLog() { if (ui.lastLog) { ui.logData = ui.lastLog; window.scrollTo(0, 0); scheduleRender(); } },
+  selectLogHand(n) { ui.logHand = n; scheduleRender(); },
+  closeLog() { ui.logData = null; ui.logCopied = false; scheduleRender(); },
+  printLog() { window.print(); },
+  async copyLog() {
+    try { await navigator.clipboard.writeText(formatGameLog(ui.logData)); ui.logCopied = true; } catch { ui.logCopied = false; }
+    scheduleRender();
+    setTimeout(() => { ui.logCopied = false; scheduleRender(); }, 1500);
+  },
+  downloadLog() {
+    const blob = new Blob([formatGameLog(ui.logData)], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = logFileName(ui.logData);
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  },
+  toggleLobbyTraits(seat) { ui.lobbyTraits[seat] = !ui.lobbyTraits[seat]; scheduleRender(); },
   toggleKing() { ui.king = !ui.king; scheduleRender(); },
   toggleTraits(seat) { ui.traitSeat = ui.traitSeat === seat ? null : seat; scheduleRender(); },
   toggleScores() { ui.showScores = !ui.showScores; scheduleRender(); },

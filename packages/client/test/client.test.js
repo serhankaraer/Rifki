@@ -196,7 +196,9 @@ test('çeviri anahtarı kapsamı: kodda kullanılan her anahtar ve her dinamik a
   for (const k of used) assert.ok(k in tr, `eksik çeviri: ${k}`);
   for (const s of ['C', 'D', 'H', 'S']) assert.ok(`suit.${s}` in tr);
   for (const c of ['KOZ', 'RIFKI', 'KIZ', 'ERKEK', 'KUPA', 'SON_IKI', 'EL_ALMAZ']) { assert.ok(`contract.${c}` in tr); assert.ok(`contract.desc.${c}` in tr); }
-  for (const k of ['risk', 'tracking', 'inference', 'lookahead', 'handEval', 'scoreAwareness', 'aggression', 'consistency', 'thinkSpeed']) assert.ok(`trait.${k}` in tr);
+  for (const k of ['handEval', 'kozAppetite', 'penaltyAvoid', 'memory', 'lookahead', 'aggression', 'scoreAwareness', 'consistency']) assert.ok(`trait.${k}` in tr);
+  for (const k of [1, 2, 3, 4, 5]) { assert.ok(`trait.cat.${k}` in tr); assert.ok(`strength.${k}` in tr); }
+  for (const b of [1, 2, 3]) assert.ok(`lobby.band.${b}` in tr);
   for (const e of ['DISCONNECTED', 'RECONNECTED', 'BOT_TOOK_OVER', 'CONTROL_RETURNED', 'LEFT', 'TIMEOUT_PLAY']) assert.ok(`seat.event.${e}` in tr);
   for (const code of [...Object.values(ERR), 'NOT_YOUR_TURN', 'WRONG_PHASE', 'ILLEGAL_CONTRACT', 'INVALID_TRUMP', 'CARD_NOT_IN_HAND', 'ILLEGAL_CARD', 'INTERNAL']) {
     assert.ok(`error.${code}` in tr, `eksik hata metni: ${code}`);
@@ -458,4 +460,50 @@ test('oyun kaydı ızgarası: kim açtı, kim aldı, rengi yok / rengi vardı, c
   assert.equal(g[0].cells[2].win, true);
   assert.deepEqual([g[0].cells[0].hadSuit, g[0].cells[0].noSuit, g[0].cells[0].penalty], [true, false, true], 'Serhan\'ın kupası vardı ama maça kızı attı');
   assert.deepEqual([g[1].cells[3].hadSuit, g[1].cells[3].noSuit], [false, true], 'Barış\'ın maçası yok');
+});
+
+test('bot özellik kategorileri ve toplu seçim aralıkları', async () => {
+  const { traitLevel, TRAIT_ORDER, BANDS, bandLevels } = await import('../public/traits.js');
+  assert.deepEqual([1, 20, 21, 40, 41, 60, 61, 80, 81, 100].map(traitLevel), [1, 1, 2, 2, 3, 3, 4, 4, 5, 5]);
+  assert.equal(TRAIT_ORDER.length, 8);
+  assert.deepEqual(BANDS, [1, 2, 3]);
+  assert.deepEqual(BANDS.map(bandLevels), [[1, 3], [2, 4], [3, 5]]);
+});
+
+test('oyun kaydı: botların arketip/özellik bilgisi metinde, makine okunur JSON blok sonda ve geri çözülebilir', async () => {
+  const { formatGameLog, machineData, LOG_JSON_BEGIN, LOG_JSON_END } = await import('../public/gamelog.js');
+  const traits = { handEval: 70, kozAppetite: 95, penaltyAvoid: 16, memory: 51, lookahead: 28, aggression: 82, scoreAwareness: 36, consistency: 38 };
+  const hand = {
+    handNo: 1, declarer: 1, contract: { type: 'KIZ', trump: null }, redeals: [],
+    deal: [['7H', 'QS'], ['3H', '4S'], ['9H', 'KS'], ['2H', 'AD']],
+    tricks: [{ trickNo: 1, leader: 1, plays: [{ seat: 1, card: '3H' }, { seat: 2, card: '9H' }, { seat: 3, card: '2H' }, { seat: 0, card: '7H' }], winner: 2 }],
+    deltas: [0, 0, 0, 0], scoresAfter: [0, 0, 0, 0], earlyEnd: false,
+  };
+  const data = {
+    names: ['Serhan', 'Ayşe', 'Hülya', 'Barış'], me: 0, code: 'ABCDE', savedAt: 1, scores: [0, 0, 0, 0], kingEnd: null, gameSeed: 'abc:game',
+    seats: [
+      { kind: 'human', takeover: { archetype: { id: 'klasik-kulup-oyuncusu', name: 'Klasik Kulüp Oyuncusu', summary: 's' }, strength: 3, overall: 55.5, mean: 54, traits } },
+      { kind: 'bot', name: 'Ayşe', archetype: { id: 'delidolu-kozcu', name: 'Delidolu Kozcu', summary: 's' }, strength: 2, overall: 41.2, mean: 52, traits },
+      { kind: 'bot', name: 'Hülya', archetype: { id: 'kusursuz-makine', name: 'Kusursuz Makine', summary: 's' }, strength: 5, overall: 93, mean: 93, traits },
+      { kind: 'empty' },
+    ],
+    gameLog: [hand],
+  };
+  const txt = formatGameLog(data);
+  assert.match(txt, /Botlar:/);
+  assert.match(txt, /1 = Ayşe: Delidolu Kozcu — Zayıf \(genel puan 41\.2, düz ortalama 52\)/);
+  assert.match(txt, /0 = Serhan: Klasik Kulüp Oyuncusu — Orta .*\(oyunculuğu bot devraldı\)/);
+  assert.match(txt, /El değerlendirme 70 \[G\] · Koz iştahı 95 \[ÇG\] · Ceza kaçınma 16 \[ÇZ\] · Kart hafızası & çıkarım 51 \[O\] · İleri hesap 28 \[Z\]/);
+  const lines = txt.split('\n');
+  const b = lines.indexOf(LOG_JSON_BEGIN); const e = lines.indexOf(LOG_JSON_END);
+  assert.ok(b > 0 && e === b + 2 && e === lines.length - 1, 'JSON bloğu dosyanın sonunda');
+  const back = JSON.parse(lines[b + 1]);
+  assert.deepEqual(back, JSON.parse(JSON.stringify(machineData(data))));
+  assert.equal(back.seed, 'abc:game');
+  assert.deepEqual(back.players.map((p) => [p.seat, p.kind, p.botId, p.archetype]), [[0, 'human', 'take-0', 'klasik-kulup-oyuncusu'], [1, 'bot', 'bot-1', 'delidolu-kozcu'], [2, 'bot', 'bot-2', 'kusursuz-makine'], [3, 'empty', null, null]]);
+  assert.deepEqual(back.players[1].traits, traits);
+  assert.deepEqual(back.hands, [hand], 'eller (dağıtım + turlar) eksiksiz');
+  // eski kayıtlar (bot bilgisi yok) de biçimlenir
+  const old = formatGameLog({ ...data, seats: undefined, gameSeed: undefined });
+  assert.ok(!/Botlar:/.test(old) && old.includes(LOG_JSON_BEGIN));
 });

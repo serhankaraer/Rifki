@@ -2,13 +2,13 @@
 import { createRng } from '@rifki/engine';
 import { createMemory } from './belief.js';
 import { decideCard, decideContract } from './decide.js';
-import { thinkDelayMs, effectiveTraits, TRAIT_FLOOR } from './traits.js';
+import { thinkDelayMs, effectiveTraits } from './traits.js';
 
 /**
- * profile: createBotProfiles çıktısı ({ id, name, traits }). simsScale: simülasyon sayısı çarpanı (testlerde < 1).
+ * profile: createBotProfiles çıktısı ({ id, name, traits (8 özellik), thinkSpeed }). simsScale: simülasyon sayısı çarpanı (testlerde < 1).
  */
-export function createBot({ profile, seed, simsScale = 1, floor = TRAIT_FLOOR }) {
-  const play = { ...profile, traits: effectiveTraits(profile.traits, floor) }; // karar mekanizması etkin değerleri görür
+export function createBot({ profile, seed, simsScale = 1 }) {
+  const play = { ...profile, traits: effectiveTraits(profile.traits) }; // karar mekanizması türetilmiş değerleri görür
   const rng = createRng(`${seed}:bot:${profile.id}`);
   const memory = createMemory();
   return {
@@ -27,7 +27,7 @@ export function createBot({ profile, seed, simsScale = 1, floor = TRAIT_FLOOR })
     },
     /** Bu hamle için yapay düşünme süresi (ms). */
     thinkDelayMs() {
-      return thinkDelayMs(profile.traits.thinkSpeed, rng);
+      return thinkDelayMs(profile.thinkSpeed ?? 50, rng);
     },
   };
 }

@@ -2,8 +2,11 @@
 // Saf fonksiyonlar (DOM yok): formatGameLog, logFileName. Ekran: screens.js içindeki logScreen.
 import { t } from './i18n.js';
 import { SUIT_SYMBOL, parseCard } from './cards.js';
+import { TRAIT_ORDER, traitLevel } from './traits.js';
 
 export const LOG_STORAGE_KEY = 'rifki.lastLog';
+export const LOG_JSON_BEGIN = '=== MAKİNE OKUNUR VERİ (JSON; silmeyin) ===';
+export const LOG_JSON_END = '=== SON ===';
 const TOTAL_HANDS = 20;
 
 const cardText = (c) => { const { rank, suit } = parseCard(c); return `${SUIT_SYMBOL[suit]}${rank}`; };
@@ -30,6 +33,7 @@ export function formatGameLog(data) {
   L.push(`${t('log.players')}: ${names.map((n, i) => `${i}=${nm(i)}`).join(', ')}`);
   L.push(`${t('log.finalScores')}: ${names.map((n, i) => `${n} ${data.scores?.[i] ?? 0}`).join(' | ')}`);
   if (data.kingEnd) L.push(`👑 ${t('log.kingEnd', { name: names[data.kingEnd.declarer], result: t(data.kingEnd.success ? 'log.kingWon' : 'log.kingLost'), n: data.kingEnd.tricks, played: data.kingEnd.tricksPlayed })}`);
+  L.push(...botLines(data));
   L.push(t('log.legend'));
 
   for (const rec of gameLog) {
@@ -60,7 +64,43 @@ export function formatGameLog(data) {
       L.push(`  ${t('log.total')}: ${names.map((n, i) => `${n} ${rec.scoresAfter[i]}`).join(' | ')}`);
     }
   }
+  L.push('', LOG_JSON_BEGIN, JSON.stringify(machineData(data)), LOG_JSON_END);
   return L.join('\n');
+}
+
+/** Özellikler satırı: "El değerlendirme 70 [G] · Koz iştahı 95 [ÇG] …" */
+const traitLine = (traits) => TRAIT_ORDER.map((k) => `${t(`trait.${k}`)} ${traits[k]} [${t(`trait.cat.${traitLevel(traits[k])}`)}]`).join(' · ');
+
+/** Botların arketip / seviye / genel puan / özellik bilgisi (metin kaydının başında). Bot yoksa boş. */
+export function botLines(data) {
+  const out = [];
+  (data.seats ?? []).forEach((s, i) => {
+    const info = s?.kind === 'bot' ? s : s?.takeover;
+    if (!info?.archetype) return;
+    const note = s.kind === 'bot' ? '' : ` (${t('log.takeoverNote')})`;
+    out.push(`  ${t('log.botLine', { seat: i, name: data.names[i], arch: info.archetype.name, level: t(`strength.${info.strength}`), overall: info.overall, mean: info.mean })}${note}`);
+    out.push(`      ${traitLine(info.traits)}`);
+  });
+  return out.length ? [`${t('log.bots')}:`, ...out] : [];
+}
+
+/** Log dosyasının sonuna konan makine okunur veri: oyunu yeniden oynatmak / botları denetlemek için gereken her şey. */
+export function machineData(data) {
+  return {
+    v: 2,
+    seed: data.gameSeed ?? null,
+    code: data.code ?? null,
+    savedAt: data.savedAt ?? null,
+    names: data.names,
+    scores: data.scores,
+    kingEnd: data.kingEnd ?? null,
+    players: (data.seats ?? []).map((s, i) => {
+      const info = s?.kind === 'bot' ? s : s?.takeover;
+      return { seat: i, name: data.names[i], kind: s?.kind ?? 'unknown', botId: s?.kind === 'bot' ? `bot-${i}` : s?.takeover ? `take-${i}` : null,
+        archetype: info?.archetype?.id ?? null, archetypeName: info?.archetype?.name ?? null, level: info?.strength ?? null, overall: info?.overall ?? null, mean: info?.mean ?? null, traits: info?.traits ?? null };
+    }),
+    hands: data.gameLog,
+  };
 }
 
 export function logFileName(data) {

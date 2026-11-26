@@ -1,10 +1,16 @@
 // Oda: koltuklar, lobi, oyun oturumu, bot zamanlaması, bağlantı kopma / bot devralma.
 // Taşıma (WebSocket) ve zamanlayıcı dışarıdan verilir (ctx) -> tamamen test edilebilir.
 import { createGame, applyCommand, viewFor, RuleError } from '@rifki/engine';
-import { createBot, createBotProfiles, TRAIT_KEYS, botStrength } from '@rifki/ai';
+import { createBot, createBotProfiles, TRAIT_KEYS, BANDS, profileInfo } from '@rifki/ai';
 import { S2C, ERR, ServerError, nickKey } from './protocol.js';
 
 const SEATS = 4;
+
+/** Bot karakterinin herkese açık özeti: arketip, seviye (1-5), genel puan, düz ortalama. */
+function botPublic(profile) {
+  const info = profileInfo(profile);
+  return { archetype: info.archetype, strength: info.level, overall: info.overall, mean: info.mean };
+}
 
 export class Room {
   constructor(ctx, code) {
@@ -42,8 +48,10 @@ export class Room {
 
   publicSeat(m) {
     if (!m) return { kind: 'empty' };
-    if (m.kind === 'bot') return { kind: 'bot', name: m.profile.name, gender: m.profile.gender, traits: { ...m.profile.traits }, strength: botStrength(m.profile.traits) };
-    return { kind: 'human', nickname: m.nickname, connected: m.connId !== null, botControlled: m.control === 'bot' };
+    if (m.kind === 'bot') return { kind: 'bot', name: m.profile.name, gender: m.profile.gender, traits: { ...m.profile.traits }, ...botPublic(m.profile) };
+    const pub = { kind: 'human', nickname: m.nickname, connected: m.connId !== null, botControlled: m.control === 'bot' };
+    if (m.takeoverProfile) pub.takeover = { traits: { ...m.takeoverProfile.traits }, ...botPublic(m.takeoverProfile) }; // bot devraldıysa: karakteri log için
+    return pub;
   }
 
   send(connId, msg) { if (connId !== null) this.ctx.send(connId, msg); }
@@ -162,8 +170,9 @@ export class Room {
     const m = this.seats[seat];
     if (!m || m.kind !== 'human' || m.control === 'bot' || this.phase !== 'PLAYING') return;
     if (m.takeoverTimer) { this.ctx.scheduler.clearTimeout(m.takeoverTimer); m.takeoverTimer = null; }
-    const base = createBotProfiles({ count: 1, seed: `${this.seedBase}:takeover:${seat}:${this.takeoverCounter++}` })[0];
+    const base = createBotProfiles({ count: 1, seed: `${this.seedBase}:takeover:${seat}:${this.takeoverCounter++}`, excludeArchetypes: this.botArchetypes() })[0];
     const profile = { ...base, id: `take-${seat}`, name: m.nickname };
+    m.takeoverProfile = profile;
     m.bot = createBot({ profile, seed: `${this.seedBase}:game`, simsScale: this.cfg.simsScale });
     m.control = 'bot';
     this.seatEvent('BOT_TOOK_OVER', seat);
@@ -180,8 +189,14 @@ export class Room {
     return seat;
   }
 
-  makeBot(seat) {
-    const profile = createBotProfiles({ count: 1, seed: `${this.seedBase}:bot:${this.botCounter++}`, takenNames: this.allNames() })[0];
+  /** Odadaki botların arketipleri (yeni botlar mümkünse bunlardan farklı seçilir). */
+  botArchetypes() {
+    return this.seats.flatMap((m) => (m && m.kind === 'bot' ? [m.profile.archetype] : []));
+  }
+
+  /** band: null = tüm arketipler, 1|2|3 = üç ardışık seviyelik aralık (bandLevels). */
+  makeBot(seat, band = null) {
+    const profile = createBotProfiles({ count: 1, seed: `${this.seedBase}:bot:${this.botCounter++}`, takenNames: this.allNames(), band, excludeArchetypes: this.botArchetypes() })[0];
     this.seats[seat] = { kind: 'bot', profile: { ...profile, id: `bot-${seat}` }, bot: null };
   }
 
@@ -190,6 +205,16 @@ export class Room {
     const seat = this.seats.findIndex((m) => m === null);
     if (seat === -1) throw new ServerError(ERR.ROOM_FULL);
     this.makeBot(seat);
+    this.broadcastState();
+  }
+
+  /** Toplu seçim: boş koltukların hepsini seçilen 3'lü seviye aralığındaki arketiplerle botla doldurur. */
+  fillBots(connId, band) {
+    this.requireHost(connId);
+    if (!BANDS.includes(band)) throw new ServerError(ERR.BAD_MESSAGE);
+    const empty = this.seats.flatMap((m, i) => (m === null ? [i] : []));
+    if (empty.length === 0) throw new ServerError(ERR.ROOM_FULL);
+    for (const seat of empty) this.makeBot(seat, band);
     this.broadcastState();
   }
 
@@ -212,7 +237,8 @@ export class Room {
     this.commandLog = [];
     this.phase = 'PLAYING';
     this.broadcastState();
-    this.broadcastViews(events);
+    // Tohum istemcilere gitmez: dağıtımı önceden hesaplatmasın (oyun bitince görünümde gameSeed ile açılır)
+    this.broadcastViews(events.map((e) => { if (e.type !== 'GAME_STARTED') return e; const { seed, ...rest } = e; return rest; }));
     this.schedule();
   }
 
@@ -344,7 +370,7 @@ export class Room {
   substituteProfile() {
     const bots = this.seats.flatMap((m, i) => (m && m.kind === 'bot' ? [i] : []));
     if (bots.length === 0) {
-      return { id: 'sub', name: 'sub', gender: 'm', traits: Object.fromEntries(TRAIT_KEYS.map((k) => [k, 50])) };
+      return { id: 'sub', name: 'sub', gender: 'm', archetype: null, traits: Object.fromEntries(TRAIT_KEYS.map((k) => [k, 50])), thinkSpeed: 50 };
     }
     const top = Math.max(...bots.map((i) => this.state.scores[i]));
     const tied = bots.filter((i) => this.state.scores[i] === top);

@@ -467,3 +467,20 @@ table.sheet { border-collapse: collapse; width: 100%; table-layout: fixed; font-
 .seat-sub { flex: 1 0 100%; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .seat-sub .strength { margin-right: auto; }
 .seat-sub button { margin-left: 0 !important; }
+
+/* ---- arketip adı, kategori etiketi, toplu bot seçimi, log botları ---- */
+.arch-info { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; margin-right: auto; min-width: 0; }
+.arch-name { font-weight: 700; font-size: 0.92rem; color: var(--text, #f3f6f2); }
+.arch-info.pop-arch { margin: 0 0 6px; }
+.arch-summary { margin: 4px 0; line-height: 1.35; }
+.bot-detail p { margin: 3px 0; }
+.trait { grid-template-columns: 1fr 90px 28px 26px; }
+.trait-cat { font-size: 0.68rem; font-weight: 700; text-align: center; padding: 0 3px; border-radius: 4px; border: 1px solid currentColor; opacity: 0.9; }
+.trait-cat.c1 { color: #ff9b9b; } .trait-cat.c2 { color: #ffc86b; } .trait-cat.c3 { color: #cfd8d2; } .trait-cat.c4 { color: #8ef0b0; } .trait-cat.c5 { color: #7cc4ff; }
+@media (max-width: 640px) { .trait { grid-template-columns: 1fr 64px 26px 24px; } }
+.bulk { margin: 10px 0; padding: 10px 12px; border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 12px; background: rgba(255, 255, 255, 0.04); }
+.bulk h3 { margin: 0 0 8px; font-size: 0.95rem; }
+.band-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.band-row .band { flex: 1 1 140px; margin-left: 0; }
+.log-bots { list-style: none; margin: 6px 0; padding: 0; display: grid; gap: 2px; }
+@media print { .log-bots { color: #000; } }

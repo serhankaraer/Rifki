@@ -4,10 +4,10 @@ import { t } from './i18n.js';
 import { SUIT_SYMBOL, SUITS, parseCard, isRed, relativePositions, groupHand } from './cards.js';
 import { buildSheet, finalStandings, certainStatus, seatOutlook, seatHandNotes, seatTrend, isLastHands, SHEET_CEZA_RIGHTS, SHEET_KOZ_RIGHTS } from './sheet.js';
 import { formatGameLog, buildHandGrid, cardText, handText, contractLabel } from './gamelog.js';
+import { TRAIT_ORDER, traitLevel, BANDS } from './traits.js';
 import { seatName, activeTrick, lastTrick, turnCountdown, revealLeft, COUNTDOWN_MS, REVEAL_MS } from './store.js';
 
 const CONTRACT_ORDER = ['RIFKI', 'KIZ', 'ERKEK', 'KUPA', 'SON_IKI', 'EL_ALMAZ'];
-const TRAIT_ORDER = ['risk', 'tracking', 'inference', 'lookahead', 'handEval', 'scoreAwareness', 'aggression', 'consistency', 'thinkSpeed'];
 const TOTAL_HANDS = 20;
 
 // ---------- ortak ----------
@@ -68,12 +68,27 @@ function strengthBadge(level) {
     h('span', { class: 'lab' }, t(`strength.${level}`)));
 }
 
+/** Arketip adı (üzerine gelince kimlik özeti). */
+function archetypeName(s) {
+  return s.archetype ? h('span', { class: 'arch-name', title: s.archetype.summary, dataset: { archetype: s.archetype.id } }, s.archetype.name) : null;
+}
+
+/** Özellik çubukları: ad, çubuk, değer ve doküman kategorisi ([ÇZ] [Z] [O] [G] [ÇG]). */
 function traitBars(traits) {
   return h('div', { class: 'traits' },
     TRAIT_ORDER.map((k) => h('div', { class: 'trait' },
       h('span', { class: 'trait-name' }, t(`trait.${k}`)),
       h('span', { class: 'bar' }, h('span', { class: 'fill', style: { width: `${traits[k]}%` } })),
-      h('span', { class: 'trait-val' }, traits[k]))));
+      h('span', { class: 'trait-val' }, traits[k]),
+      h('span', { class: `trait-cat c${traitLevel(traits[k])}`, title: t(`strength.${traitLevel(traits[k])}`) }, t(`trait.cat.${traitLevel(traits[k])}`)))));
+}
+
+/** Bot kimliği: arketip özeti ve genel puan (özellik çubuklarının üstünde). */
+function botDetail(s) {
+  return h('div', { class: 'bot-detail' },
+    s.archetype ? h('p', { class: 'arch-summary small muted' }, s.archetype.summary) : null,
+    s.overall !== undefined ? h('p', { class: 'small muted' }, t('lobby.overall', { overall: s.overall, mean: s.mean })) : null,
+    traitBars(s.traits));
 }
 
 export function lobbyScreen(state, ui, actions) {
@@ -96,10 +111,10 @@ export function lobbyScreen(state, ui, actions) {
         h('span', { class: 'seat-name' }, s.name),
         h('span', { class: 'chip' }, `🤖 ${t('lobby.bot')}`),
         h('div', { class: 'seat-sub' },
-          strengthBadge(s.strength),
+          h('div', { class: 'arch-info' }, archetypeName(s), strengthBadge(s.strength)),
           h('button', { class: 'small', dataset: { toggleTraits: i }, 'aria-expanded': String(!!ui.lobbyTraits?.[i]), onClick: () => actions.toggleLobbyTraits(i) }, t(ui.lobbyTraits?.[i] ? 'lobby.hideTraits' : 'lobby.showTraits')),
           isHost ? h('button', { class: 'small danger', onClick: () => actions.removeBot(i) }, t('lobby.removeBot')) : null)),
-      ui.lobbyTraits?.[i] ? traitBars(s.traits) : null);
+      ui.lobbyTraits?.[i] ? botDetail(s) : null);
   });
   return h('main', { class: 'lobby' },
     connBanner(state),
@@ -107,6 +122,10 @@ export function lobbyScreen(state, ui, actions) {
       h('div', null, h('div', { class: 'muted small' }, t('lobby.code')), h('div', { id: 'room-code', class: 'room-code' }, room.code)),
       h('button', { id: 'copy', onClick: () => actions.copyCode() }, ui.copied ? t('lobby.copied') : t('lobby.copy'))),
     h('ul', { class: 'seats' }, rows),
+    isHost ? h('section', { class: 'bulk', 'aria-label': t('lobby.bulk') },
+      h('h3', null, t('lobby.bulk')),
+      h('div', { class: 'band-row' }, BANDS.map((b) => h('button', { class: 'band', dataset: { band: b }, disabled: full, onClick: () => actions.fillBots(b) }, t(`lobby.band.${b}`)))),
+      h('p', { class: 'muted small' }, t('lobby.bulkHint'))) : null,
     h('p', { class: 'muted small' }, t('lobby.traits')),
     h('div', { class: 'actions' },
       isHost ? h('button', { id: 'add-bot', disabled: full, onClick: () => actions.addBot() }, t('lobby.addBot')) : null,
@@ -233,8 +252,9 @@ function traitPopover(state, ui, actions) {
   if (!s || s.kind !== 'bot') return null;
   return h('div', { class: 'overlay-in clear', id: 'trait-layer', onClick: (e) => { if (e.target === e.currentTarget) actions.toggleTraits(ui.traitSeat); } },
     h('div', { class: 'trait-pop', role: 'dialog', 'aria-label': `${s.name} — ${t('game.traitsTitle')}` },
-      h('h4', null, h('span', { class: 'pop-title' }, `🤖 ${s.name}`, strengthBadge(s.strength)), h('button', { class: 'small', id: 'close-traits', 'aria-label': t('game.close'), onClick: () => actions.toggleTraits(ui.traitSeat) }, '✕')),
-      traitBars(s.traits)));
+      h('h4', null, h('span', { class: 'pop-title' }, `🤖 ${s.name}`), h('button', { class: 'small', id: 'close-traits', 'aria-label': t('game.close'), onClick: () => actions.toggleTraits(ui.traitSeat) }, '✕')),
+      h('div', { class: 'arch-info pop-arch' }, archetypeName(s), strengthBadge(s.strength)),
+      botDetail(s)));
 }
 
 function trickArea(state, trickInfo) {
@@ -515,6 +535,16 @@ function handGrid(data, rec, order, on) {
 }
 
 /** Oyun kaydı ekranı: el seçicili ızgara (sütun = oyuncu, satır = tur); yazdırma, kopyalama ve .txt indirme düğmeleri vardır. */
+/** Kayıt ekranında botların arketipi, seviyesi ve genel puanı (yazdırmada da çıkar). */
+function logBots(data) {
+  const rows = (data.seats ?? []).flatMap((s, i) => {
+    const info = s?.kind === 'bot' ? s : s?.takeover;
+    if (!info?.archetype) return [];
+    return [h('li', null, h('b', null, data.names[i]), s.kind === 'bot' ? ' 🤖 ' : ` (${t('log.takeoverShort')}) `, info.archetype.name, ' · ', t(`strength.${info.strength}`), ` · ${t('log.overallShort')} ${info.overall}`)];
+  });
+  return rows.length ? h('ul', { class: 'log-bots small', 'aria-label': t('log.bots') }, rows) : null;
+}
+
 export function logScreen(data, ui, actions) {
   const order = [0, 1, 2, 3].map((i) => (data.me + i) % 4);
   const sel = data.gameLog.some((r) => r.handNo === ui.logHand) ? ui.logHand : data.gameLog[0]?.handNo;
@@ -525,6 +555,7 @@ export function logScreen(data, ui, actions) {
       h('button', { id: 'log-copy', class: 'small', onClick: () => actions.copyLog() }, ui.logCopied ? t('log.copied') : t('log.copy')),
       h('button', { id: 'log-download', class: 'small primary', onClick: () => actions.downloadLog() }, t('log.download'))),
     h('p', { class: 'log-sum small muted' }, `${t('log.room')} ${data.code ?? '-'} · ${t('log.finalScores')}: ${data.names.map((n, i) => `${n} ${data.scores?.[i] ?? 0}`).join(' | ')}`),
+    logBots(data),
     h('div', { class: 'log-chips', role: 'tablist', 'aria-label': t('log.hands') },
       data.gameLog.map((rec) => h('button', { class: `log-chip ${rec.handNo === sel ? 'on' : ''} ${rec.kingEnd ? 'king' : ''}`.replace(/\s+/g, ' ').trim(), dataset: { hand: rec.handNo }, role: 'tab', 'aria-selected': String(rec.handNo === sel),
         title: `${contractLabel(rec.contract)} — ${data.names[rec.declarer]}`, onClick: () => actions.selectLogHand(rec.handNo) },

@@ -1,11 +1,11 @@
 // Bot arena: botları başsız (headless) olarak oynatıp başarılarını ölçer. Kullanım: bkz. experiments.js
 import { createGame, applyCommand, viewFor, createRng, STRUCTURE } from '@rifki/engine';
 import { createBot } from '../src/bot.js';
-import { TRAIT_KEYS, TRAIT_FLOOR } from '../src/traits.js';
+import { TRAIT_KEYS } from '../src/traits.js';
 
 export const traitsAll = (v, over = {}) => ({ ...Object.fromEntries(TRAIT_KEYS.map((k) => [k, v])), ...over });
 
-/** Oyuncu tanımı: { kind: 'bot', traits } | { kind: 'random' } */
+/** Oyuncu tanımı: { kind: 'bot', traits (8 özellik) } | { kind: 'random' } */
 function makePlayer(spec, seed, seat, opts) {
   if (spec.kind === 'random') {
     const rng = createRng(`${seed}:random:${seat}`);
@@ -22,7 +22,7 @@ function makePlayer(spec, seed, seat, opts) {
       },
     };
   }
-  const b = createBot({ profile: { id: `s${seat}`, name: `s${seat}`, traits: spec.traits }, seed: `${seed}:${seat}`, simsScale: opts.simsScale ?? 1, floor: opts.floor ?? TRAIT_FLOOR });
+  const b = createBot({ profile: { id: `s${seat}`, name: `s${seat}`, traits: spec.traits }, seed: `${seed}:${seat}`, simsScale: opts.simsScale ?? 1 });
   if (!spec.oracle) return b;
   // Hileli ölçüm botu: rakiplerin gerçek ellerini bilir (bilginin değer tavanını ölçmek için)
   return { act: (view, state) => b.act(view, { sampleWorld: (v) => state.hand.hands.map((h) => h.slice()) }) };
@@ -34,8 +34,8 @@ export function runGame(opts) {
 }
 
 /** Tam bir oyun; { scores, handResults } döner (handResults: motorun el sonuç listesi). */
-export function runGameFull({ seed, seats, simsScale = 1, floor = TRAIT_FLOOR }) {
-  const players = seats.map((s, i) => makePlayer(s, seed, i, { simsScale, floor }));
+export function runGameFull({ seed, seats, simsScale = 1 }) {
+  const players = seats.map((s, i) => makePlayer(s, seed, i, { simsScale }));
   let { state } = createGame({ seed });
   let guard = 0;
   while (state.phase !== 'GAME_OVER') {

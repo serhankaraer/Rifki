@@ -1,14 +1,17 @@
 // Sunucuyu başlatır: node src/main.js
 // Ortam değişkenleri: PORT (varsayılan 3001), CLIENT_DIR (varsayılan ../client/public),
+// RIFKI_TRAIT_IMPACT (JSON; özelliklerin bot seviyesine etkisi 0-100, örn. {"lookahead":80,"consistency":100}; verilmeyenler varsayılan),
 // RIFKI_CONFIG (JSON; örn. {"thinkDelayScale":0.01,"takeoverMs":5000} - geliştirme/test için)
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { attachWebSocket } from './ws-adapter.js';
 import { createStaticHandler } from './static.js';
+import { setTraitImpact } from '@rifki/ai';
 
 const port = Number(process.env.PORT || 3001);
 const clientDir = process.env.CLIENT_DIR || fileURLToPath(new URL('../../client/public/', import.meta.url));
 const config = process.env.RIFKI_CONFIG ? JSON.parse(process.env.RIFKI_CONFIG) : {};
+if (process.env.RIFKI_TRAIT_IMPACT) setTraitImpact(JSON.parse(process.env.RIFKI_TRAIT_IMPACT)); // geçersizse sunucu başlamaz
 const serveStatic = createStaticHandler(clientDir);
 
 const server = http.createServer(async (req, res) => {

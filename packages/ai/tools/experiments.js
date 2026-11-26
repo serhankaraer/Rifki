@@ -6,15 +6,14 @@ import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import { runGameFull, traitsAll } from './arena.js';
-import { TRAIT_KEYS } from '../src/traits.js';
+import { TRAIT_KEYS, ARCHETYPES } from '../src/traits.js';
 import { TUNING, TUNING_DEFAULTS } from '../src/decide.js';
 
 const SELF = fileURLToPath(import.meta.url);
-const GAMEPLAY_TRAITS = TRAIT_KEYS.filter((k) => k !== 'thinkSpeed');
 const bot = (traits) => ({ kind: 'bot', traits });
 const avgBot = bot(traitsAll(50));
 
-/** Deney tanımları: { name, tester, others, simsScale?, floor? } listesi */
+/** Deney tanımları: { name, tester, others, simsScale?, tuning?, detail? } listesi */
 export const EXPERIMENTS = {
   // Bot kodu mu, özellikler mi? Tüm özellikleri aynı seviyeye çekip ortalama botlara karşı oynat.
   baseline: () => [
@@ -25,82 +24,38 @@ export const EXPERIMENTS = {
     { name: 'tüm özellikler 75', tester: bot(traitsAll(75)), others: avgBot },
     { name: 'tüm özellikler 100', tester: bot(traitsAll(100)), others: avgBot },
   ],
-  // Yeni alt sınır denemeleri: en az 4 simülasyon (saf sezgisel mod kaldırıldı)
-  lookahead1: () => [
-    { name: 'lookahead=1 (en az 4 simülasyon)', tester: bot(traitsAll(50, { lookahead: 1 })), others: avgBot },
-    { name: 'lookahead=15', tester: bot(traitsAll(50, { lookahead: 15 })), others: avgBot },
-    { name: 'lookahead=30', tester: bot(traitsAll(50, { lookahead: 30 })), others: avgBot },
-  ],
-  // Güncel ayarla (TRAIT_FLOOR) özet: oyuncu gücü sıralaması
-  final: () => [
-    { name: 'rastgele oyuncu', tester: { kind: 'random' }, others: avgBot },
-    { name: 'tüm özellikler 1', tester: bot(traitsAll(1)), others: avgBot },
-    { name: 'tüm özellikler 50 (kontrol)', tester: bot(traitsAll(50)), others: avgBot },
-    { name: 'tüm özellikler 100', tester: bot(traitsAll(100)), others: avgBot },
-  ],
-  // Bilgi tavanı: rakiplerin gerçek ellerini bilen bot ne kadar kazanır? (çıkarımın alabileceği azami değer)
+  // Tek özellik etkisi: biri 1 ya da 100, diğerleri 50 (etki parametresinin varsayılanları buradan türetilir). Tarz göstergeleri de basılır.
+  traits: () => TRAIT_KEYS.flatMap((k) => [
+    { name: `${k}=1`, tester: bot(traitsAll(50, { [k]: 1 })), others: avgBot, detail: true },
+    { name: `${k}=100`, tester: bot(traitsAll(50, { [k]: 100 })), others: avgBot, detail: true },
+  ]),
+  // Koz iştahı ayarı: KOZ seçeneğine eklenen değer (kozBias) ve ortaya çıkan koz payı / güç
+  kozbias: () => [50, 100, 200].flatMap((kb) => [
+    { name: `koz=1 bias ${kb}`, tester: bot(traitsAll(50, { kozAppetite: 1 })), others: avgBot, detail: true, tuning: { kozBias: kb } },
+    { name: `koz=100 bias ${kb}`, tester: bot(traitsAll(50, { kozAppetite: 100 })), others: avgBot, detail: true, tuning: { kozBias: kb } },
+  ]),
+  // Tutarlılık ayarı: hata olasılığının üst sınırı (errorMax); hedef: etkisi diğer özelliklerle (≈ ±100) aynı büyüklükte
+  consistency: () => [0.3, 0.15, 0.1].flatMap((em) => [
+    { name: `tutarlılık=1 hata ${em}`, tester: bot(traitsAll(50, { consistency: 1 })), others: avgBot, tuning: { errorMax: em } },
+    { name: `tutarlılık=100 hata ${em}`, tester: bot(traitsAll(50, { consistency: 100 })), others: avgBot, tuning: { errorMax: em } },
+  ]),
+  // Ceza kaçınma ayarı: kendi ceza puanının ağırlık yayılımı (lossSpread)
+  ceza: () => [0.25, 0.5, 1].flatMap((ls) => [
+    { name: `ceza=1 yayılım ${ls}`, tester: bot(traitsAll(50, { penaltyAvoid: 1 })), others: avgBot, detail: true, tuning: { lossSpread: ls } },
+    { name: `ceza=100 yayılım ${ls}`, tester: bot(traitsAll(50, { penaltyAvoid: 100 })), others: avgBot, detail: true, tuning: { lossSpread: ls } },
+  ]),
+  // 21 arketip: aralık orta noktalarıyla üretilen bot, üç "hepsi 50" bota karşı (doküman seviyesi ve hesaplanan seviye ile birlikte)
+  archetypes: () => ARCHETYPES.map((a) => ({
+    name: `${String(a.no).padStart(2)} ${a.name} [doküman ${a.docLevel}]`,
+    tester: bot(Object.fromEntries(TRAIT_KEYS.map((k) => [k, Math.round((a.ranges[k][0] + a.ranges[k][1]) / 2)]))),
+    others: avgBot,
+    detail: true,
+  })),
+  // Bilgi tavanı: rakiplerin gerçek ellerini bilen bot ne kadar kazanır?
   oracle: () => [
     { name: 'normal (50)', tester: bot(traitsAll(50)), others: avgBot },
     { name: 'hileli: gerçek elleri biliyor (50)', tester: { ...bot(traitsAll(50)), oracle: true }, others: avgBot },
-    { name: 'çıkarım=1 takip=1', tester: bot(traitsAll(50, { inference: 1, tracking: 1 })), others: avgBot, floor: 1 },
-    { name: 'çıkarım=100 takip=100', tester: bot(traitsAll(50, { inference: 100, tracking: 100 })), others: avgBot, floor: 1 },
   ],
-  // Tarz ölçümü: risk / saldırganlık / skor farkındalığı uçları (diğer özellikler 50, taban 1: ham değer)
-  style: () => ['risk', 'aggression', 'scoreAwareness'].flatMap((k) => [
-    { name: `${k}=1`, tester: bot(traitsAll(50, { [k]: 1 })), others: avgBot, floor: 1, detail: true },
-    { name: `${k}=100`, tester: bot(traitsAll(50, { [k]: 100 })), others: avgBot, floor: 1, detail: true },
-  ]),
-  // El değerlendirme ve çıkarım: uçlar (diğer özellikler 50, ham değer)
-  skill2: () => ['handEval', 'inference'].flatMap((k) => [
-    { name: `${k}=1`, tester: bot(traitsAll(50, { [k]: 1 })), others: avgBot, floor: 1 },
-    { name: `${k}=100`, tester: bot(traitsAll(50, { [k]: 100 })), others: avgBot, floor: 1 },
-  ]),
-  // Çıkarım uçları (diğer özellikler 50, ham değer)
-  infer: () => [
-    { name: 'inference=1', tester: bot(traitsAll(50, { inference: 1 })), others: avgBot, floor: 1 },
-    { name: 'inference=100', tester: bot(traitsAll(50, { inference: 100 })), others: avgBot, floor: 1 },
-  ],
-  // Tarz katsayısı denemeleri (TUNING geçersiz kılmaları)
-  tune: () => [
-    { name: 'risk=1  kart.35/söz1.0', tester: bot(traitsAll(50, { risk: 1 })), others: avgBot, floor: 1, detail: true, tuning: { riskCard: 0.35, riskContract: 1.0 } },
-    { name: 'risk=100 kart.35/söz1.0', tester: bot(traitsAll(50, { risk: 100 })), others: avgBot, floor: 1, detail: true, tuning: { riskCard: 0.35, riskContract: 1.0 } },
-    { name: 'risk=1  kart.6/söz.5', tester: bot(traitsAll(50, { risk: 1 })), others: avgBot, floor: 1, detail: true, tuning: { riskCard: 0.6, riskContract: 0.5 } },
-    { name: 'risk=100 kart.6/söz.5', tester: bot(traitsAll(50, { risk: 100 })), others: avgBot, floor: 1, detail: true, tuning: { riskCard: 0.6, riskContract: 0.5 } },
-    { name: 'aggr=100 katsayı 0', tester: bot(traitsAll(50, { aggression: 100 })), others: avgBot, floor: 1, detail: true, tuning: { aggression: 0 } },
-    { name: 'aggr=100 katsayı 3', tester: bot(traitsAll(50, { aggression: 100 })), others: avgBot, floor: 1, detail: true, tuning: { aggression: 3 } },
-    { name: 'skor=1  kayma 100', tester: bot(traitsAll(50, { scoreAwareness: 1 })), others: avgBot, floor: 1, detail: true, tuning: { saShift: 100 } },
-    { name: 'skor=100 kayma 100', tester: bot(traitsAll(50, { scoreAwareness: 100 })), others: avgBot, floor: 1, detail: true, tuning: { saShift: 100 } },
-  ],
-  // Tarz katsayıları, ikinci tur
-  tune2: () => [
-    { name: 'skor=1  kayma 0', tester: bot(traitsAll(50, { scoreAwareness: 1 })), others: avgBot, floor: 1, detail: true, tuning: { saShift: 0, riskCard: 0.6, riskContract: 0.5 } },
-    { name: 'skor=100 kayma 0', tester: bot(traitsAll(50, { scoreAwareness: 100 })), others: avgBot, floor: 1, detail: true, tuning: { saShift: 0, riskCard: 0.6, riskContract: 0.5 } },
-    { name: 'aggr=1  katsayı 2.5', tester: bot(traitsAll(50, { aggression: 1 })), others: avgBot, floor: 1, detail: true, tuning: { aggression: 2.5, saShift: 0, riskCard: 0.6, riskContract: 0.5 } },
-    { name: 'aggr=100 katsayı 2.5', tester: bot(traitsAll(50, { aggression: 100 })), others: avgBot, floor: 1, detail: true, tuning: { aggression: 2.5, saShift: 0, riskCard: 0.6, riskContract: 0.5 } },
-  ],
-  // Skor farkındalığı (yeni tasarım)
-  tune3: () => [
-    { name: 'skor=1  kayma 60', tester: bot(traitsAll(50, { scoreAwareness: 1 })), others: avgBot, floor: 1, detail: true },
-    { name: 'skor=100 kayma 60', tester: bot(traitsAll(50, { scoreAwareness: 100 })), others: avgBot, floor: 1, detail: true },
-    { name: 'skor=1  kayma 120', tester: bot(traitsAll(50, { scoreAwareness: 1 })), others: avgBot, floor: 1, detail: true, tuning: { saShift: 120 } },
-    { name: 'skor=100 kayma 120', tester: bot(traitsAll(50, { scoreAwareness: 100 })), others: avgBot, floor: 1, detail: true, tuning: { saShift: 120 } },
-  ],
-  // Değiştirilen beş özelliğin son hali: biri 1 ya da 100, diğerleri 50 (ham değerler)
-  ablation2: () => ['handEval', 'inference', 'risk', 'aggression', 'scoreAwareness'].flatMap((k) => [
-    { name: `${k}=1`, tester: bot(traitsAll(50, { [k]: 1 })), others: avgBot, floor: 1, detail: true },
-    { name: `${k}=100`, tester: bot(traitsAll(50, { [k]: 100 })), others: avgBot, floor: 1, detail: true },
-  ]),
-  // Alt sınır (taban) taraması: görünen 1 değeri davranışta f gibi çalışır. Herkes aynı tabanla oynar.
-  floor: () => [1, 20, 30, 40].flatMap((f) => [
-    { name: `taban ${f}: tüm özellikler 1`, tester: bot(traitsAll(1)), others: avgBot, floor: f },
-    { name: `taban ${f}: yalnız tutarlılık=1`, tester: bot(traitsAll(50, { consistency: 1 })), others: avgBot, floor: f },
-    { name: `taban ${f}: yalnız ileri hesap=1`, tester: bot(traitsAll(50, { lookahead: 1 })), others: avgBot, floor: f },
-  ]),
-  // Tek özellik etkisi: biri 1 ya da 100, diğerleri 50
-  ablation: () => GAMEPLAY_TRAITS.flatMap((k) => [
-    { name: `${k}=1`, tester: bot(traitsAll(50, { [k]: 1 })), others: avgBot },
-    { name: `${k}=100`, tester: bot(traitsAll(50, { [k]: 100 })), others: avgBot },
-  ]),
 };
 
 function jobsFor(conds, seeds) {
@@ -164,6 +119,7 @@ export function styleTable(conds, results) {
     return {
       name: c.name,
       'kendi ilan sd': round(sd(declared)),
+      'koz %': round((100 * kozHands.length) / Math.max(1, decl), 1),
       'koz ort. el': round(mean(kozHands), 1),
       'riskli ceza %': round((100 * risky) / decl, 1),
       'lider farkı': round(mean(aggr), 1),
@@ -216,7 +172,7 @@ if (process.argv[2] === 'worker') {
     const { job, cond } = m;
     Object.assign(TUNING, TUNING_DEFAULTS, cond.tuning ?? {});
     const seats = [0, 1, 2, 3].map((i) => (i === job.rot ? cond.tester : cond.others));
-    const { scores, handResults } = runGameFull({ seed: job.seed, seats, simsScale: cond.simsScale ?? 1, floor: cond.floor });
+    const { scores, handResults } = runGameFull({ seed: job.seed, seats, simsScale: cond.simsScale ?? 1 });
     const msg = { ci: job.ci, seed: job.seed, rot: job.rot, score: scores[job.rot] };
     if (cond.detail) msg.hands = handResults.map((r) => [r.handNo, r.declarer, r.contract.type, r.deltas]);
     process.send(msg);

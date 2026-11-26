@@ -610,9 +610,11 @@ test('oyun kaydı: oyun bitince tüm elleri, dağıtımları ve turları içerir
   const rng = createRng('log-test');
   let { state } = createGame({ seed: 'logseed' });
   let sawEarly = false;
+  let sawSeedEarly = false;
   for (let guard = 0; state.phase !== 'GAME_OVER'; guard++) {
     assert.ok(guard < 5000);
     if (viewFor(state, 0).gameLog) sawEarly = true;
+    if (viewFor(state, 0).gameSeed !== undefined) sawSeedEarly = true;
     if (state.phase === 'HAND_SCORED') { state = applyCommand(state, { type: 'NEXT_HAND' }).state; continue; }
     const opts = currentOptions(state);
     let cmd;
@@ -622,6 +624,8 @@ test('oyun kaydı: oyun bitince tüm elleri, dağıtımları ve turları içerir
     state = applyCommand(state, cmd).state;
   }
   assert.equal(sawEarly, false, 'oyun sürerken başkalarının elleri sızmaz');
+  assert.equal(sawSeedEarly, false, 'oyun sürerken tohum sızmaz');
+  assert.equal(viewFor(state, 2).gameSeed, state.seed, 'oyun bitince tohum açılır');
   const log = viewFor(state, 2).gameLog;
   assert.equal(log.length, 20);
   log.forEach((rec, i) => {

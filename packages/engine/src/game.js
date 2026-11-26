@@ -265,7 +265,10 @@ export function viewFor(state, seat) {
     config: { ...state.config },
     kingEnd: state.kingEnd ? { ...state.kingEnd } : null,
   };
-  if (state.phase === 'GAME_OVER') view.gameLog = structuredClone(state.handLog ?? []); // tüm eller açılır: yalnız oyun bittiğinde
+  if (state.phase === 'GAME_OVER') {
+    view.gameLog = structuredClone(state.handLog ?? []); // tüm eller açılır: yalnız oyun bittiğinde
+    view.gameSeed = state.seed; // oyun bitince tohum da açılır: kayıttan oyunu birebir yeniden oynatmak için
+  }
   const h = state.hand;
   if (!h) return view;
 

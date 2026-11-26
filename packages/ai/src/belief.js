@@ -66,7 +66,7 @@ function applyExclusions(mem, seat, card, contract) {
 }
 
 const HONOR_RANKS = ['A', 'K', 'Q'];
-const MISREAD_MAX = 0.12;
+const MISREAD_MAX = 0.06;
 
 // Kuralların tersten okunmasıyla elde edilen kesin çıkarımlar (derin çıkarım: yalnız çıkarım özelliği yüksek botlar fark eder).
 //  1. Koz: masadaki en büyük kozdan küçük koz atan oyuncunun elinde daha büyük koz yoktur (yükseltme zorunluluğu).
@@ -115,11 +115,11 @@ export function updateMemory(mem, view, traits, rng) {
   };
   for (const t of view.trickHistory) pushTrick(t.plays, false);
   if (view.trick.plays.length > 0) pushTrick(view.trick.plays, true);
-  const pBase = 0.4 + 0.6 * (traits.tracking / 100);
-  const pInfer = 0.15 + 0.85 * (traits.inference / 100);
+  const pBase = 0.6 + 0.4 * (traits.tracking / 100);
+  const pInfer = 0.4 + 0.6 * (traits.inference / 100);
   const pDeep = Math.max(0, (traits.inference - 15) / 85);
   const pMisread = MISREAD_MAX * (1 - traits.inference / 100); // yanlış çıkarım olasılığı (her renge uyma hamlesinde)
-  mem.tilt = 0.9 * (traits.inference / 100); // ilan edenin elini sözleşme seçiminden tahmin etme gücü
+  mem.tilt = 0.5 * (traits.inference / 100); // ilan edenin elini sözleşme seçiminden tahmin etme gücü
   for (let i = mem.processed; i < events.length; i++) {
     const e = events[i];
     const pNotice = isRelevantCard(view.contract, e.card) ? Math.min(1, pBase + 0.25) : pBase;

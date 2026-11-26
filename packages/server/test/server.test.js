@@ -39,6 +39,38 @@ test('katılım: kod büyük/küçük harf duyarsız; takma ad doğrulama ve ça
   assert.equal(c.error, 'ROOM_NOT_FOUND');
 });
 
+test('toplu bot seçimi: yalnız oda sahibi, band 1-3; boş koltuklar 3\'lü seviye aralığındaki arketiplerle dolar', () => {
+  for (const band of [1, 2, 3]) {
+    const h = createHarness();
+    const { host, humans } = createRoom(h, ['Serhan', 'Can']);
+    humans[1].send({ t: 'FILL_BOTS', band });
+    assert.equal(humans[1].error, 'NOT_HOST');
+    for (const bad of [0, 4, 'x', null, 1.5]) {
+      host.send({ t: 'FILL_BOTS', band: bad });
+      assert.equal(host.error, 'BAD_MESSAGE', `band ${bad}`);
+    }
+    host.send({ t: 'FILL_BOTS', band });
+    const seats = host.last('ROOM_STATE').seats;
+    assert.deepEqual(seats.map((x) => x.kind), ['human', 'human', 'bot', 'bot']);
+    for (const b of seats.slice(2)) assert.ok(b.strength >= band && b.strength <= band + 2, `band ${band}: seviye ${b.strength}`);
+    assert.notEqual(seats[2].archetype.id, seats[3].archetype.id);
+    host.send({ t: 'FILL_BOTS', band });
+    assert.equal(host.error, 'ROOM_FULL');
+  }
+  const h = createHarness();
+  const { host } = createRoom(h, ['Serhan', 'Can']);
+  host.send({ t: 'ADD_BOT' }); // tek tek ekleme de çalışır; toplu doldurma kalan boş koltuğu doldurur
+  host.send({ t: 'FILL_BOTS', band: 2 });
+  assert.deepEqual(host.last('ROOM_STATE').seats.map((x) => x.kind), ['human', 'human', 'bot', 'bot']);
+});
+
+test('oyun başında tohum istemcilere gönderilmez (dağıtım önceden hesaplanamaz); oyun bitince gameSeed görünümde açılır', () => {
+  const h = createHarness();
+  const r = startSolo(h);
+  assert.ok(!JSON.stringify(r.host.all('GAME_VIEW')).includes('"seed"'), 'GAME_STARTED olayında tohum yok');
+  assert.equal(r.host.last('GAME_VIEW').view.gameSeed, undefined);
+});
+
 test('oda en fazla 4 insan; aynı bağlantı iki odaya giremez', () => {
   const h = createHarness();
   const { code, humans } = createRoom(h, ['A', 'B', 'C', 'D']);
@@ -61,11 +93,14 @@ test('bot ekleme/çıkarma: yalnız oda sahibi; botların özellikleri lobide g�
   assert.deepEqual(seats.map((x) => x.kind), ['human', 'human', 'bot', 'bot']);
   for (const b of seats.slice(2)) {
     assert.ok(b.name && (b.gender === 'F' || b.gender === 'M'));
-    assert.equal(Object.keys(b.traits).length, 9);
+    assert.equal(Object.keys(b.traits).length, 8);
     assert.ok(Number.isInteger(b.strength) && b.strength >= 1 && b.strength <= 5, 'bot gücü etiketi (1-5)');
+    assert.ok(b.archetype?.id && b.archetype.name && b.archetype.summary, 'arketip adı ve özeti');
+    assert.ok(b.overall >= 1 && b.overall <= 100 && b.mean >= 1 && b.mean <= 100);
     for (const v of Object.values(b.traits)) assert.ok(v >= 1 && v <= 100);
   }
   assert.notEqual(seats[2].name, seats[3].name);
+  assert.notEqual(seats[2].archetype.id, seats[3].archetype.id, 'odada arketip tekrarı yok');
   host.send({ t: 'ADD_BOT' });
   assert.equal(host.error, 'ROOM_FULL');
   host.send({ t: 'REMOVE_BOT', seat: 1 });
@@ -387,7 +422,7 @@ test('süre sayacı: dönen oyuncuya kalan süre iletilir', () => {
   back.send({ t: 'RESUME', token });
   const tt = back.last('TURN_TIMER');
   assert.equal(tt.seat, me);
-  assert.equal(tt.ms, 18_000);
+  assert.ok(tt.ms > 16_000 && tt.ms <= 18_000, `kalan süre ~18 sn (${tt.ms})`); // sıra, toMyTurn'ün son adımından biraz önce başlamış olabilir
 });
 
 test('yedek bot profili: en yüksek puanlı bot; eşitlikte rastgele; botsuz odada varsayılan özellikler', () => {
@@ -409,6 +444,7 @@ test('yedek bot profili: en yüksek puanlı bot; eşitlikte rastgele; botsuz oda
   r2.host.send({ t: 'START_GAME' });
   const p = room(h2, r2.code).substituteProfile();
   assert.ok(Object.values(p.traits).every((v) => v === 50), 'botsuz odada varsayılan özellikler');
+  assert.equal(Object.keys(p.traits).length, 8);
 });
 
 test("yasal tek kartı olan bot 1 sn'de oynar (düşünme süresini ezer); diğer hamleler 1-3 sn", () => {

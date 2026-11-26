@@ -8,6 +8,7 @@ export const C2S = {
   LEAVE_ROOM: 'LEAVE_ROOM',         // {}
   ADD_BOT: 'ADD_BOT',               // {}  (yalnız oda sahibi, lobide)
   REMOVE_BOT: 'REMOVE_BOT',         // { seat }
+  FILL_BOTS: 'FILL_BOTS',           // { band: 1|2|3 }  boş koltukları 3'lü seviye aralığındaki arketiplerle doldurur (1: çok zayıf–orta, 2: zayıf–güçlü, 3: orta–çok güçlü)
   START_GAME: 'START_GAME',         // {}  boş koltuklar botla doldurulur
   CHOOSE_CONTRACT: 'CHOOSE_CONTRACT', // { contract, trump? }
   PLAY_CARD: 'PLAY_CARD',           // { card }

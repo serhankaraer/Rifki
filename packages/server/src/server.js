@@ -92,6 +92,9 @@ export function createGameServer({ send, close, scheduler, random, config = {}, 
       case C2S.REMOVE_BOT:
         roomOf(connId).removeBot(connId, msg.seat);
         return;
+      case C2S.FILL_BOTS:
+        roomOf(connId).fillBots(connId, msg.band);
+        return;
       case C2S.START_GAME:
         roomOf(connId).start(connId);
         return;

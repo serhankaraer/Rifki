@@ -49,27 +49,55 @@ Ortam değişkenleri: `PORT` (3001), `CLIENT_DIR`, `RIFKI_CONFIG` (JSON, örn. `
 - Sunucu otoriterdir; her oyuncuya yalnızca kendi görebildiği durum (`viewFor`) gönderilir.
 - Çok dil: `packages/client/public/locales/` altına yeni dil dosyası + `i18n.js` içine kayıt.
 
-## Bot özellikleri ve ölçüm
+## Bot arketipleri ve özellikleri
+Botlar yalnızca `docs/bot-arketipleri.md` içindeki **21 arketipten** biri olarak üretilir (`packages/ai/src/archetypes.js`; dokümandan `node tools/gen-archetypes.mjs` ile üretilir — doküman değişirse yeniden çalıştırın). Her arketipin 8 özelliği `min–max` aralıklarıyla tanımlıdır; bot üretilirken her özellik kendi aralığında rastgele (tamsayı) çekilir, böylece aynı arketipten gelen botlar birbirinin aynısı olmaz. **Ortalama sınırı**: çekilen 8 özelliğin düz ortalaması arketipin "Hedef Ort." aralığının dışına çıkarsa (ham çekimlerde en çok %3), kimliği belirleyen dar aralıklı (≤ ±7) özellikler korunup yan özellikler orantılı ölçeklenir. **Alt sınır yoktur**: özellik değeri davranışa olduğu gibi yansır (eskiden 1 → 30 gibi çalışırdı). Düşünme hızı bir özellik değildir: her bota gizli, rastgele bir hız atanır (1–3 sn gecikme) ve oyun gücüne etkisi yoktur.
 
-Lobide görünen özellikler 1–100'dür; oyun davranışında **alt sınır** uygulanır: görünen 1, davranışta 30 gibi çalışır (100 her zaman 100; düşünme hızı hariç). Sabit: `TRAIT_FLOOR` (`packages/ai/src/traits.js`).
-
-| Özellik | Ne yapar | Ölçülen etki (1 → 100, diğerleri 50) |
+| Özellik (`anahtar`) | Ne yapar | Ölçülen etki (1 → 100, diğerleri 50; puan/oyun; iki ölçüm aralığı, her biri ± ≈100) |
 |---|---|---|
-| İleri hesap (`lookahead`) | Kaç olası dağıtımı simüle eder | çok büyük (≈ +500) |
-| Tutarlılık (`consistency`) | Düşükse bazen en iyi hamle yerine 2./3. hamleyi seçer | çok büyük (≈ +500) |
-| Takip (`tracking`) | Oynanan kartları fark etme olasılığı; kaçırılan kartlar hayali kart olarak hafızada kalır | büyük (≈ +130) |
-| El değerlendirme (`handEval`) | Sözleşme seçiminde daha kesin tahmin + kalan koz/ceza haklarının fırsat maliyetini (planlama) hesaba katma (`contract-plan.js`); düşükse tahmin gürültülü | orta (≈ +100) |
-| Çıkarım (`inference`) | Renk bitirmeyi fark etme, kural çıkarımları (koz yükseltme zorunluluğu, kupa/koz ile açış, A-K-Q serisi), ilan edenin sözleşmesinden elini tahmin etme; zayıfsa yanlış çıkarımlar (rakibi olmayan bir renkten bitmiş sanma) | küçük (≈ +50) |
-| Risk (`risk`) | Oynak (yüksek sapmalı) seçenekleri tercih etme; kartlarda ve sözleşme seçiminde | tarz: kartların %19'u farklı; risk 100 ortalamada ≈ −75 puan kaybettirir |
-| Saldırganlık (`aggression`) | Puanda öndeki rakibe ceza yedirmek için kendi puanından feragat | tarz: lider varken kartların ≈ %22'si farklı; maliyeti küçük |
-| Skor farkındalığı (`scoreAwareness`) | Oyunun amacı sıfırın üstünde bitirmek: geç oyunda rahat öndeyken güvene alır, umutsuz gerideyken risk alır | tarz, ince: yalnız belirgin önde/geride iken kartların ≈ %7'si farklı; güce etkisi yok |
+| Tutarlılık (`consistency`) | Düşükse bazen en iyi hamle yerine 2./3. hamleyi seçer; hata olasılığı 1 iken en çok %12 (`TUNING.errorMax`; eskiden %30 idi ve etkisi diğerlerinin 2–9 katıydı) | ≈ +230 (ayardan önce +490) |
+| İleri hesap (`lookahead`) | Kaç olası dağıtımı simüle eder | ≈ +320…+430 (en büyük etki) |
+| Ceza kaçınma (`penaltyAvoid`) | **Yeni.** Ceza ellerinde kart seçerken kendi ceza puanının ağırlığı: 1 → ×0,5 (umursamaz), 100 → ×1,5 (duvar gibi). Koz ellerinde etkisizdir | ≈ +40…+180 |
+| El değerlendirme (`handEval`) | Sözleşme seçiminde daha kesin tahmin + kalan koz/ceza haklarının fırsat maliyeti (`contract-plan.js`) | ≈ +120…+180 |
+| Kart hafızası & çıkarım (`memory`) | Eski "takip" ve "çıkarım" tek özellikte birleşti: oynanan kartları fark etme, renk bitirmeyi ve kuralları çıkarma, ilan edenin elini tahmin etme; zayıfsa yanlış çıkarımlar | ≈ +130…+270 |
+| Koz iştahı (`kozAppetite`) | **Yeni.** Sözleşme seçiminde KOZ seçeneklerine −100…+100 puan eğilim (`TUNING.kozBias`): yüksekse koz haklarını erken kullanır (koz eli ortalaması ≈ 14,6 → 10,2). Risk iştahının yarısını da besler | tarz; yüksekken ≈ −30…−110 |
+| Baskı & provokasyon (`aggression`) | Puanda öndeki rakibe ceza yedirmek için kendi puanından feragat; risk iştahının diğer yarısı | tarz; yüksekken ≈ −110…−160 |
+| Skor farkındalığı (`scoreAwareness`) | Geç oyunda rahat öndeyken güvene alır, umutsuz gerideyken risk alır | tarz, ince; ≈ −55…+25 |
 
-Not: rakiplerin gerçek elini bilen hileli bir bot normal bottan iyi değildir; bu botlarda "daha çok bilgi" doğrudan puana dönüşmez, asıl fark yanlış/eksik bilginin zararından gelir (takip ve çıkarım bu yüzden bu şekilde modellenmiştir).
+Risk iştahı (oynak seçenekleri tercih) ayrı bir özellik değildir: `(koz iştahı + baskı) / 2` olarak türetilir (`effectiveTraits`).
+
+### Özelliklerin seviyeye etkisi (ayarlanabilir parametre)
+Dokümandaki "Genel Seviye" 8 özelliğin düz ortalamasıdır, oysa özelliklerin oyun gücüne etkisi eşit değildir. Bu yüzden her özelliğin **etkisi 0–100** bir parametredir (`TRAIT_IMPACT_DEFAULTS`, `packages/ai/src/traits.js`); arketipin ve botun **genel puanı** özellik değerlerinin bu ağırlıklarla ağırlıklı ortalamasıdır, **seviye** (1–20 çok zayıf, 21–40 zayıf, 41–60 orta, 61–80 güçlü, 81–100 çok güçlü) ondan çıkar. Hepsi 100 yapılırsa dokümandaki düz ortalama hesabı elde edilir. Varsayılanlar ölçümlere en iyi uyan ağırlıklardır (üç aday denendi): tutarlılık 100, ileri hesap 75, ceza kaçınma 35, kart hafızası 30, el değerlendirme 28; koz iştahı, baskı ve skor farkındalığı 0 (yüksekken puan kaybettirdikleri / etkisiz oldukları için etiketi yükseltmesinler). Sunucuda değiştirmek için `RIFKI_TRAIT_IMPACT='{"lookahead":60,"kozAppetite":20}'` (verilmeyenler varsayılan; geçersizse sunucu başlamaz). **Etki ayarı yalnızca etiketi ve toplu seçimdeki arketip havuzunu değiştirir, botun oyun davranışını değiştirmez.** Arketip seviyesi, aralık orta noktalarının ağırlıklı puanından hesaplanır; aynı arketipten çıkan her bot bu seviyeyi taşır.
+
+**Denge durumu (dürüst not):** özelliklerin oyun etkisi hâlâ tam eşit değildir, ama ilk sürümdeki uçurumlar kapatıldı. 1 → 100 farkı (puan/oyun, diğer her şey 50; her ölçüm 12 tohum × 4 = 48 oyun/koşul, tek bir etkinin hatası ≈ ±100):
+
+| Özellik | İlk sürüm | Ayardan sonra (ölçüm 1) | Aynı ayar, tekrar (ölçüm 2) |
+|---|---|---|---|
+| İleri hesap | +433 | +322 | +376* |
+| Tutarlılık | +226 (hata sınırı %12, önceden %30'da +490) | +234 | +400* |
+| El değerlendirme | +120 | +203 | +230 |
+| Kart hafızası | +269 | +88 | +125 |
+| Skor farkındalığı | +24 | +84 | +15 |
+| Ceza kaçınma | +40 | +22 | −53 |
+| Koz iştahı | −31 | −80 | −124 |
+| Baskı | −162 | −82 | −231 |
+
+\*ikinci ölçümde ileri hesap ve tutarlılık için denediğim sıkılaştırma (simülasyon aralığı, hata sınırı %9) etkiyi düşürmedi, ölçüm gürültüsü ayar farkından büyük çıktı; bu yüzden ilk ayara dönüldü. Yapılan ayarlar: tutarlılık hata sınırı %30 → %12; ileri hesap simülasyon aralığı 6–76 → 8–46; kart hafızası taban gücü yükseltildi (gözleme 0,4 → 0,6, çıkarıma 0,15 → 0,4; yanlış okuma %12 → %6, ilan edenin elini sezme 0,9 → 0,5); baskı katsayısı 2,0 → 1,0.
+
+Kalan sorunlar: (1) İleri Hesap ve Tutarlılık hâlâ en güçlü iki özellik (≈ +300…+400); (2) Koz İştahı ve Baskı yüksekken puan kaybettirir, çünkü ikisi de risk iştahını besler ve baskı kendi puanından feragat anlamına gelir; yani "yüksek = güçlü" varsayımı bu iki özellik için geçerli değildir (tarz özellikleridir); (3) etkileri ±100 içinde sıkıştırmak için özellik başına birkaç yüz oyun gerekir, tek ölçümle ince ayar yapılamıyor. Bu yüzden etiket (Çok zayıf…Çok güçlü) hesabında "Özellik etkisi" parametresi kullanılır (aşağıda); gerçek etki dengesi için onu ve `TUNING` katsayılarını ayarlayabilirsiniz.
+
+**Doğrulama (`experiments.js archetypes 6`, 21 arketip × 48 oyun, "hepsi 50" botlara karşı, üç ölçüm):** hesaplanan genel puan sırası ile ölçülen güç sırası arasındaki Spearman korelasyonu 0,82–0,91 (son ölçüm 0,87); dokümandaki düz ortalama ile 0,56–0,75. Son ölçümde seviyelere göre ortalama avantaj: çok zayıf −262, zayıf −203, orta −10, güçlü +29, çok güçlü +264. Belirgin sapmalar: Koz İştahı ve Baskısı yüksek arketipler (*Gözü Kara Acemi*, *Delidolu Kozcu*) ve *Saf İçgüdü Ustası* beklenenden zayıf.
+
+### Bot seçimi (lobi)
+- **Tek tek:** "Bot ekle" tüm 21 arketipten rastgele bir bot ekler; oyunu başlatınca boş koltuklar da böyle doldurulur.
+- **Toplu:** oda sahibi "Toplu bot seçimi"nde üç ardışık seviyelik bir aralık seçer — *Çok zayıf–Orta*, *Zayıf–Güçlü*, *Orta–Çok güçlü* (`FILL_BOTS { band: 1|2|3 }`) — ve boş koltuklar o aralıktaki arketiplerle (eşit olasılıkla) dolar.
+- Aynı odada mümkün olduğunca aynı arketip tekrar etmez. Lobide bot satırında arketip adı ve seviye görünür; "Özellikler" kimlik özetini, genel puanı ve özellik çubuklarını (`[ÇZ] [Z] [O] [G] [ÇG]` etiketleriyle) açar. Oyunda bot ismine dokununca aynı bilgi kutuda çıkar.
+
+**Ölçüm notu:** rakiplerin gerçek elini bilen hileli bir bot normal bottan iyi değildir; bu botlarda "daha çok bilgi" doğrudan puana dönüşmez, asıl fark yanlış/eksik bilginin zararından gelir (takip ve çıkarım bu yüzden bu şekilde modellenmiştir).
 
 ### Ölçüm araçları (`packages/ai/tools`)
 
-- `node tools/experiments.js <deney> [tohum_sayısı] [çıktı.json]` (`WORKERS` işçi sayısı): başsız arenada test edilen bot, üç "hepsi 50" bota karşı tüm koltuklarda ve aynı tohumlarla oynar. Oyun sıfır toplamlı olduğundan test edilenin ortalama puanı doğrudan avantajıdır (kontrol ≈ 0). Deneyler: `baseline`, `ablation`, `ablation2`, `final`, `floor`, `oracle`, `infer`, `skill2`, `style`, `tune`, `tune2`, `tune3`.
-- `style` ve `tune*` deneyleri tarz göstergelerini de basar (kendi ilan ettiği ellerde oynaklık, lideri yedirme farkı, kazanma oranı vb.).
+- `node tools/experiments.js <deney> [tohum_sayısı] [çıktı.json]` (`WORKERS` işçi sayısı): başsız arenada test edilen bot, üç "hepsi 50" bota karşı tüm koltuklarda ve aynı tohumlarla oynar. Oyun sıfır toplamlı olduğundan test edilenin ortalama puanı doğrudan avantajıdır (kontrol ≈ 0). Deneyler: `baseline`, `traits` (8 özelliğin etkisi + tarz göstergeleri), `kozbias`, `ceza`, `archetypes` (21 arketip, orta nokta değerleriyle), `oracle`. Ölçüm gürültülüdür (4 koltuk × tohum; 48 oyunda ortalamanın hatası ≈ ±60): etkileri karşılaştırırken tohum sayısını artırın.
+- `detail` deneyleri tarz göstergelerini de basar (kendi ilan ettiği ellerde oynaklık, lideri yedirme farkı, kazanma oranı vb.).
 - `node tools/divergence.mjs`: aynı konumda iki özellik değeri farklı kart seçiyor mu (tarzın davranışa yansıması).
 - `node tools/gen-contract-table.js` → `src/contract-table.json` (sözleşme planlaması için rastgele ellerin değer tablosu), `node tools/gen-declarer-prior.js` → `src/declarer-prior.json` (ilan edenin elinin bileşimi). Oyun kuralları ya da bot politikası değişirse yeniden üretin.
 
@@ -88,9 +116,10 @@ Son 4 elde (17–20), sonucu henüz kesin olmayan her oyuncunun kutusunda "↗ �
 - Motor, biten her elin (ve King ile kesilen elin) tam dökümünü tutar: ilk dağıtım (dört elin kartları), Rıfkı yeniden dağıtımları, her turun açanı, oynanış sırasıyla kartları ve alanı, el sonucu. Başkalarının elleri sızmasın diye `view.gameLog` yalnızca oyun bittiğinde (`GAME_OVER`) görünümde yer alır.
 - Oyun bitince (ve King bitişinde) "Oyun kaydı" düğmesi kayıt ekranını açar (`client/public/gamelog.js`, `screens.js: logScreen`): üstte el seçici (el no + seçicinin ilk harfleri), altında ızgara — sütun oyuncular (seçicinin sütunu sarı, "seçici" yazar), satır turlar; hücrede atılan kart, turu alan sarı, turu açan mavi nokta, küçük sayı oynanış sırası, ceza kartı çerçeveli. Rengi olmayan oyuncu `rengi yok`, rengi olduğu halde uymayan `⚠ rengi vardı` ile işaretlenir. **Yazdır** tüm elleri (el başına bir ızgara) basar; **Kopyala** ve **İndir (.txt)** aynı ayrıntıyı düz metin olarak verir (`formatGameLog`).
 - Kayıt oyun biter bitmez bu cihazın `localStorage`'ına da yazılır; odadan çıkınca ana ekrandaki "Son oyunun kaydı" düğmesiyle açılır.
+- **Bot bilgileri:** ekranda ızgaranın üstünde, metin kaydının başında ve JSON'da her botun arketibi, seviyesi, genel puanı (ağırlıklı), düz ortalaması ve 8 özelliği (`[ÇZ]…[ÇG]` etiketleriyle) yer alır. Oyunculuğu bot devralan insan koltuğu için devralan botun bilgisi de eklenir.
+- **Makine okunur veri:** .txt kaydının sonunda `=== MAKİNE OKUNUR VERİ (JSON; silmeyin) ===` ve `=== SON ===` arasında tek satır JSON bulunur: oyun tohumu (`seed`; oyun bitince `view.gameSeed` ile açılır, oyun sürerken istemciye gönderilmez), oyuncular (bot kimliği, arketip, özellikler) ve tüm eller (dağıtımlar, Rıfkı yeniden dağıtımları, sözleşmeler, tur tur oynanış). Dosyanın bu satırını silmeyin/düzenlemeyin.
+- **Kayıttan yeniden oynatma:** `node packages/ai/tools/replay-log.mjs kayit.txt [--sims 1] [--explain EL:TUR:KOLTUK]`. Araç (1) tohumdan üretilen dağıtımların kayıttakiyle aynı olduğunu doğrular, (2) kayıttaki her hamleyi motora uygulayıp kural dışı/bozuk hamle olup olmadığına bakar, (3) her bot kararını sunucudaki akışla (karar + düşünme gecikmesi çekimi, aynı tohum ve aynı bot kodu) yeniden verip kayıttakiyle karşılaştırır; hepsi aynıysa kayıt bot koduyla tutarlıdır. `--explain` o karardaki aday sıralamasını (puanlarıyla) ve botun görüşünü (eli, yasal kartlar) basar (`TUR` 0 = sözleşme seçimi). Sunucunun `simsScale` değeri (varsayılan 1) farklıysa `--sims` verin. Bot devri ve süre aşımı hamleleri bu akışı bozar; ilk sapmada araç durur ve raporlar.
 
 ## Son 4 elde 7 sınıf
 `seatTrend` (sheet.js) her oyuncuyu şöyle sınıflar: kesin çıkar, çıkmaya çok yakın, çıkmaya yakın, ortada (oran |0,15| içinde), batmaya yakın, batmaya çok yakın, kesin batar. Son elde (20) eşik notları kesindir: koz elinde `en az N koz almalı`, ceza elinde `en az N … yerse batar`.
 
-## Bot gücü etiketi
-`botStrength` (`ai/src/traits.js`): özelliklerden tek bir güç puanı hesaplanır — ölçülen etkilerle ağırlıklı (ileri hesap 500, tutarlılık 500, takip 130, el değerlendirme 100, çıkarım 50; 50 üstü risk en çok −75). Saldırganlık, skor farkındalığı ve düşünme hızı güce etki etmez. Puan, normal dağılımlı üretilen botların %10/%20/%40/%20/%10'unu verecek sabit eşiklerle (`STRENGTH_THRESHOLDS`) 5 etikete çevrilir: çok zayıf, zayıf, orta, güçlü, çok güçlü. Sunucu `seats[].strength` (1–5) olarak gönderir; lobide bot satırında ("Özellikler" düğmesiyle özellik çubukları açılır) ve oyun içinde bot ismine dokununca açılan kutuda görünür. Ağırlıklar ya da bot politikası değişirse eşikleri yeniden hesaplayın (ai testi dağılımı doğrular).

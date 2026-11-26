@@ -51,11 +51,16 @@ const net = createNet({
 
 // Oyun biter bitmez kaydı bu cihaza yazar (odadan çıkınca da ana ekrandan açılabilsin).
 let loggedFor = null;
+// Kayda giren koltuk bilgisi: bot arketipi/özellikleri (ya da insan koltuğunu devralan botun) — log'dan oyun yeniden oynatılabilsin
+function logSeat(s) {
+  if (s.kind === 'bot') return { kind: 'bot', name: s.name, archetype: s.archetype, strength: s.strength, overall: s.overall, mean: s.mean, traits: s.traits };
+  return { kind: s.kind, ...(s.takeover ? { takeover: s.takeover } : {}) };
+}
 function currentLogData() {
   const { view, room } = state;
   if (!view?.gameLog || !room) return null;
   if (loggedFor !== view.gameLog) { loggedFor = view.gameLog; ui.logSavedAt = Date.now(); }
-  return { names: [0, 1, 2, 3].map((s) => seatName(room, s)), me: view.seat, code: room.code, savedAt: ui.logSavedAt, scores: view.scores, kingEnd: view.kingEnd, gameLog: view.gameLog };
+  return { names: [0, 1, 2, 3].map((s) => seatName(room, s)), me: view.seat, code: room.code, savedAt: ui.logSavedAt, scores: view.scores, kingEnd: view.kingEnd, gameSeed: view.gameSeed ?? null, seats: room.seats.map(logSeat), gameLog: view.gameLog };
 }
 function persistLog() {
   if (!state.view?.gameLog || state.view.gameLog === loggedFor) return;
@@ -128,6 +133,7 @@ const actions = {
     net.send({ t: 'JOIN_ROOM', code: ui.form.code.trim(), nickname });
   },
   addBot() { net.send({ t: 'ADD_BOT' }); },
+  fillBots(band) { net.send({ t: 'FILL_BOTS', band }); },
   removeBot(seat) { net.send({ t: 'REMOVE_BOT', seat }); },
   startGame() { net.send({ t: 'START_GAME' }); },
   leave(confirmFirst) {

@@ -4,15 +4,18 @@ import {
   createGame, applyCommand, viewFor, currentOptions, createRng, makeDeck, suitOf, scoreHand,
 } from '@rifki/engine';
 import {
-  NAMES, FEMALE_NAMES, MALE_NAMES, TRAIT_KEYS, TRAIT_MEAN, sampleTrait, thinkDelayMs, createBotProfiles,
+  NAMES, FEMALE_NAMES, MALE_NAMES, TRAIT_KEYS, thinkDelayMs, createBotProfiles,
   createMemory, updateMemory, sampleWorld, unseenPool, rollout, heuristicPlay, trickPointsFor, createBot,
-  MIN_THINK_MS, MAX_THINK_MS, effectiveTraits, TRAIT_FLOOR,
+  MIN_THINK_MS, MAX_THINK_MS, effectiveTraits,
+  ARCHETYPES, getArchetype, sampleArchetypeTraits, archetypeLevel, levelOfScore, traitScore, traitMean, bandLevels,
+  TRAIT_IMPACT, TRAIT_IMPACT_DEFAULTS, setTraitImpact, profileInfo,
 } from '../src/index.js';
 import { futureValue, continuationValue } from '../src/contract-plan.js';
 import { runGame, traitsAll as arenaTraits } from '../tools/arena.js';
+import { replayLog, parseLogText, LOG_JSON_BEGIN, LOG_JSON_END } from '../tools/replay-log.mjs';
 
 const traitsAll = (v, over = {}) => ({ ...Object.fromEntries(TRAIT_KEYS.map((k) => [k, v])), ...over });
-const profile = (id, v, over) => ({ id, name: id, traits: traitsAll(v, over) });
+const profile = (id, v, over) => ({ id, name: id, traits: traitsAll(v, over), thinkSpeed: 50 });
 const pick = (arr, rng) => arr[Math.floor(rng() * arr.length)];
 
 // ---- isimler ----
@@ -23,23 +26,120 @@ test('100 benzersiz isim: 50 kadın, 50 erkek', () => {
   assert.equal(new Set(NAMES.map((n) => n.name)).size, 100);
 });
 
-// ---- özellik dağılımı ----
-test('özellikler 1-100 arası ve normal dağılımlı (uçlar nadir, ortalar sık)', () => {
-  const rng = createRng('dist');
-  const N = 60000;
-  const deciles = new Array(10).fill(0);
-  let sum = 0;
-  for (let i = 0; i < N; i++) {
-    const v = sampleTrait(rng);
-    assert.ok(Number.isInteger(v) && v >= 1 && v <= 100);
-    deciles[Math.min(9, Math.floor((v - 1) / 10))]++;
-    sum += v;
+// ---- arketipler (docs/bot-arketipleri.md) ----
+test('21 arketip: benzersiz kimlik, 8 özellik aralığı, hedef ortalama kendi aralıklarıyla uyumlu', () => {
+  assert.equal(ARCHETYPES.length, 21);
+  assert.equal(new Set(ARCHETYPES.map((a) => a.id)).size, 21);
+  const DOC_LEVEL = { 'Çok Zayıf': [1, 20], Zayıf: [21, 40], Orta: [41, 60], Güçlü: [61, 80], 'Çok Güçlü': [81, 100] };
+  for (const a of ARCHETYPES) {
+    assert.deepEqual(Object.keys(a.ranges), TRAIT_KEYS, a.name);
+    for (const [lo, hi] of Object.values(a.ranges)) assert.ok(lo >= 1 && hi <= 100 && lo < hi, a.name);
+    const mean = (i) => Object.values(a.ranges).reduce((s, r) => s + r[i], 0) / 8;
+    const [tlo, thi] = DOC_LEVEL[a.docLevel];
+    assert.ok(a.target[0] >= tlo && a.target[1] <= thi, `${a.name}: hedef ortalama dokümandaki seviye aralığında`);
+    assert.ok(mean(0) <= a.target[1] && mean(1) >= a.target[0], `${a.name}: aralıklar hedefle kesişir`);
   }
-  assert.ok(Math.abs(sum / N - TRAIT_MEAN) < 0.7, 'ortalama ~50');
-  const [d1, d2, d3, d4, d5, d6, d7, d8, d9, d10] = deciles;
-  assert.ok(d5 > 5 * d1 && d6 > 5 * d10, 'orta onluk uçlardan çok daha sık');
-  assert.ok(d1 < d2 && d2 < d3 && d3 < d4 && d4 < d5 + d6, 'sol yarı yükselir');
-  assert.ok(d10 < d9 && d9 < d8 && d8 < d7 && d7 < d5 + d6, 'sağ yarı alçalır');
+  assert.equal(ARCHETYPES.filter((a) => a.docLevel === 'Çok Zayıf').length, 1);
+  assert.equal(ARCHETYPES.filter((a) => a.docLevel === 'Çok Güçlü').length, 5);
+});
+
+test('arketipten üretim: her özellik kendi aralığında (yan özellikler ortalama sınırı için dışarı çıkabilir), ortalama hedefte, botlar birbirinden farklı', () => {
+  const rng = createRng('arch-sample');
+  for (const a of ARCHETYPES) {
+    const seen = new Set();
+    let outOfRange = 0;
+    for (let i = 0; i < 300; i++) {
+      const tr = sampleArchetypeTraits(a, rng);
+      assert.deepEqual(Object.keys(tr), TRAIT_KEYS);
+      const m = traitMean(tr);
+      assert.ok(m >= a.target[0] - 1e-9 && m <= a.target[1] + 1e-9, `${a.name}: ortalama ${m} hedef ${a.target}`);
+      for (const k of TRAIT_KEYS) {
+        assert.ok(Number.isInteger(tr[k]) && tr[k] >= 1 && tr[k] <= 100);
+        if (tr[k] < a.ranges[k][0] || tr[k] > a.ranges[k][1]) outOfRange++;
+      }
+      seen.add(JSON.stringify(tr));
+    }
+    assert.ok(seen.size > 250, `${a.name}: dinamik varyasyon (${seen.size}/300)`);
+    assert.ok(outOfRange < 300 * 8 * 0.05, `${a.name}: aralık dışı değer nadir (${outOfRange})`);
+  }
+});
+
+test('ortalama sınırı: hedefin dışına çıkan çekim yan özelliklerin ölçeklenmesiyle hedefe çekilir; çekirdek özellikler aralıkta kalır', () => {
+  const a = getArchetype('buz-gibi-cerrah'); // hedef 83-90, aralık ortalaması ~85: ham çekimlerde ~%3 hedef dışı
+  const rng = createRng('cap');
+  const coreKeys = TRAIT_KEYS.filter((k) => a.ranges[k][1] - a.ranges[k][0] <= 14);
+  assert.ok(coreKeys.length >= 4);
+  let capped = 0;
+  for (let i = 0; i < 4000; i++) {
+    const tr = sampleArchetypeTraits(a, rng);
+    if (TRAIT_KEYS.some((k) => tr[k] < a.ranges[k][0] || tr[k] > a.ranges[k][1])) {
+      capped++;
+      for (const k of coreKeys) assert.ok(tr[k] >= a.ranges[k][0] && tr[k] <= a.ranges[k][1], `çekirdek ${k} aralık dışına çıkmadı`);
+    }
+  }
+  assert.ok(capped > 0, 'ortalama sınırı devreye girdi');
+});
+
+// ---- özellik etki parametresi ve seviyeler ----
+test('seviye kategorileri: 1-20, 21-40, 41-60, 61-80, 81-100', () => {
+  assert.deepEqual([1, 20, 21, 40, 41, 60, 61, 80, 81, 100].map(levelOfScore), [1, 1, 2, 2, 3, 3, 4, 4, 5, 5]);
+});
+
+test('etki parametresi: ağırlıklı genel puan; hepsi eşitse düz ortalama; setTraitImpact doğrular ve varsayılana döner', () => {
+  const tr = { handEval: 10, kozAppetite: 90, penaltyAvoid: 50, memory: 50, lookahead: 100, aggression: 50, scoreAwareness: 50, consistency: 20 };
+  const equal = Object.fromEntries(TRAIT_KEYS.map((k) => [k, 100]));
+  assert.ok(Math.abs(traitScore(tr, equal) - traitMean(tr)) < 1e-9);
+  const onlyLook = { ...Object.fromEntries(TRAIT_KEYS.map((k) => [k, 0])), lookahead: 100 };
+  assert.equal(traitScore(tr, onlyLook), 100);
+  assert.throws(() => setTraitImpact({ lookahead: 101 }));
+  assert.throws(() => setTraitImpact({ lookahead: -1 }));
+  assert.throws(() => setTraitImpact({ bilinmeyen: 5 }));
+  assert.throws(() => setTraitImpact(Object.fromEntries(TRAIT_KEYS.map((k) => [k, 0]))));
+  try {
+    setTraitImpact(equal);
+    assert.ok(TRAIT_KEYS.every((k) => TRAIT_IMPACT[k] === 100));
+    // eşit etkide seviye = aralık orta noktalarının düz ortalamasının seviyesi (dokümandaki hesap)
+    for (const a of ARCHETYPES) {
+      const mids = Object.fromEntries(TRAIT_KEYS.map((k) => [k, (a.ranges[k][0] + a.ranges[k][1]) / 2]));
+      assert.equal(archetypeLevel(a), levelOfScore(traitMean(mids)), a.name);
+    }
+    setTraitImpact({ lookahead: 0, consistency: 0 }); // ağırlık 0: ileri hesap/tutarlılık seviyeyi etkilemez
+    assert.equal(traitScore({ ...tr, lookahead: 1 }), traitScore({ ...tr, lookahead: 100 }));
+  } finally {
+    setTraitImpact(null);
+  }
+  assert.deepEqual({ ...TRAIT_IMPACT }, TRAIT_IMPACT_DEFAULTS);
+  for (const v of Object.values(TRAIT_IMPACT_DEFAULTS)) assert.ok(v >= 0 && v <= 100);
+});
+
+test('seviye: ileri hesap ve tutarlılık (varsayılan en etkili) seviyeyi, tarz özelliklerinden daha çok değiştirir', () => {
+  const base = Object.fromEntries(TRAIT_KEYS.map((k) => [k, 50]));
+  const d = (k) => traitScore({ ...base, [k]: 100 }) - traitScore({ ...base, [k]: 1 });
+  assert.ok(d('lookahead') > 2 * d('handEval') && d('consistency') > 2 * d('aggression'));
+});
+
+test('createBotProfiles: arketip, aralıktaki özellikler, gizli düşünme hızı; toplu seçim 3\'lü seviye aralığında; aynı odada arketip tekrarı yok', () => {
+  for (const band of [1, 2, 3]) {
+    const [lo, hi] = bandLevels(band);
+    assert.deepEqual([lo, hi], [band, band + 2]);
+    for (let i = 0; i < 10; i++) {
+      const ps = createBotProfiles({ count: 3, seed: `band${band}-${i}`, band });
+      assert.equal(new Set(ps.map((p) => p.archetype)).size, 3, 'aynı odada arketip tekrarı yok');
+      for (const p of ps) {
+        const l = archetypeLevel(getArchetype(p.archetype));
+        assert.ok(l >= lo && l <= hi, `band ${band}: ${p.archetype} seviye ${l}`);
+        assert.equal(profileInfo(p).level, l);
+        assert.ok(p.thinkSpeed >= 1 && p.thinkSpeed <= 100 && !('thinkSpeed' in p.traits));
+      }
+    }
+  }
+  // mevcut arketipler hariç tutulur
+  const first = createBotProfiles({ count: 1, seed: 'ex1' })[0];
+  for (let i = 0; i < 30; i++) assert.notEqual(createBotProfiles({ count: 1, seed: `ex2-${i}`, excludeArchetypes: [first.archetype] })[0].archetype, first.archetype);
+  // tüm arketipler üretilebilir
+  const all = new Set();
+  for (let i = 0; i < 400; i++) all.add(createBotProfiles({ count: 1, seed: `all-${i}` })[0].archetype);
+  assert.equal(all.size, 21);
 });
 
 // ---- düşünme gecikmesi ----
@@ -69,6 +169,7 @@ test('createBotProfiles: tekrarsız isim, insan adlarıyla çakışmaz, seed ile
   assert.equal(new Set(a.map((p) => p.name)).size, 3);
   for (const p of a) {
     assert.deepEqual(Object.keys(p.traits), TRAIT_KEYS);
+    assert.ok(getArchetype(p.archetype));
     for (const v of Object.values(p.traits)) assert.ok(v >= 1 && v <= 100);
   }
   assert.deepEqual(a, createBotProfiles({ count: 3, seed: 's1' }));
@@ -102,7 +203,7 @@ test('çıkarım özelliği renk bitirmeyi fark etme olasılığını belirler',
   };
   assert.equal(rate(100), 1);
   const low = rate(1);
-  assert.ok(low > 0.05 && low < 0.3, `düşük çıkarım ~%16 (${low})`);
+  assert.ok(low > 0.32 && low < 0.52, `düşük çıkarım ~%40 (${low})`);
 });
 
 test('çıkarım: Kız elinde rengi yokken kız atmayan oyuncunun kızı olmadığı anlaşılır', () => {
@@ -144,7 +245,7 @@ test('takip özelliği oynanan kartları fark etme olasılığını belirler', (
   };
   assert.equal(rate(100), 1);
   const low = rate(1);
-  assert.ok(low > 0.32 && low < 0.48, `düşük takip ~%40 (${low})`);
+  assert.ok(low > 0.54 && low < 0.68, `düşük takip ~%60 (${low})`);
 });
 
 test('sampleWorld: boyutlar, kendi el, kısıtlar (renk bitirme) ve tekrarsızlık', () => {
@@ -277,7 +378,7 @@ test('güçlü kişilik, zayıf kişiliğe karşı belirgin biçimde daha iyi pu
   let wins = 0;
   for (let g = 0; g < G; g++) {
     const arr = g % 2 === 0 ? [0, 1, 0, 1] : [1, 0, 1, 0];
-    const profiles = arr.map((a, i) => (a === 0 ? profile(`strong${i}`, 90, { thinkSpeed: 50 }) : profile(`weak${i}`, 10, { thinkSpeed: 50 })));
+    const profiles = arr.map((a, i) => (a === 0 ? profile(`strong${i}`, 90) : profile(`weak${i}`, 10)));
     const state = playGame(`power-${g}`, profiles, 0.4);
     const sum = (flag) => state.scores.reduce((acc, s, i) => acc + (arr[i] === flag ? s : 0), 0) / 2;
     const d = sum(0) - sum(1);
@@ -288,19 +389,16 @@ test('güçlü kişilik, zayıf kişiliğe karşı belirgin biçimde daha iyi pu
   assert.ok(wins >= 5, `güçlü ${wins}/${G} oyun kazandı`);
 });
 
-// ---- alt sınır ----
-test('etkin özellik: görünen 1 -> TRAIT_FLOOR, 100 -> 100, artan; thinkSpeed değişmez', () => {
+// ---- karar mekanizmasının gördüğü değerler ----
+test('effectiveTraits: alt sınır yok (1 -> 1, 100 -> 100); hafıza takip+çıkarımı sürer; risk koz iştahı ve baskıdan türer', () => {
   const lo = effectiveTraits(traitsAll(1));
   const hi = effectiveTraits(traitsAll(100));
-  const mid = effectiveTraits(traitsAll(50));
-  for (const k of TRAIT_KEYS) {
-    if (k === 'thinkSpeed') { assert.equal(lo[k], 1); assert.equal(hi[k], 100); continue; }
-    assert.ok(Math.abs(lo[k] - TRAIT_FLOOR) < 1e-9, `${k} alt sınır`);
-    assert.ok(Math.abs(hi[k] - 100) < 1e-9);
-    assert.ok(lo[k] < mid[k] && mid[k] < hi[k]);
+  for (const k of ['handEval', 'lookahead', 'consistency', 'scoreAwareness', 'aggression', 'koz', 'ceza', 'tracking', 'inference', 'risk']) {
+    assert.equal(lo[k], 1, k); assert.equal(hi[k], 100, k);
   }
-  assert.deepEqual(effectiveTraits(traitsAll(37), 1), traitsAll(37), 'taban 1 = değişiklik yok');
-  assert.ok(TRAIT_FLOOR > 1 && TRAIT_FLOOR < 100);
+  const e = effectiveTraits(traitsAll(50, { memory: 80, kozAppetite: 90, aggression: 10, penaltyAvoid: 30 }));
+  assert.equal(e.tracking, 80); assert.equal(e.inference, 80);
+  assert.equal(e.risk, 50); assert.equal(e.koz, 90); assert.equal(e.ceza, 30);
 });
 
 test('arena: tam oyun başsız oynanır, toplam puan 0', () => {
@@ -384,10 +482,10 @@ test('ilan edenin sözleşmesi elini ele verir: koz ilan eden rakip daha çok ko
 // ---- botlar kurallara uyar (bağımsız denetçi) ----
 test('botlar uç karakter değerlerinde bile renge uyar ve rengi yoksa ceza kartı atar (Kız/Erkek/Kupa/Rıfkı)', () => {
   const T = (v, o = {}) => traitsAll(v, o);
-  const profiles = [T(1), T(100), T(50, { tracking: 1, inference: 1, consistency: 1 }), T(50, { risk: 100, aggression: 100, consistency: 1 }), T(1, { consistency: 1, tracking: 1 })];
+  const profiles = [T(1), T(100), T(50, { memory: 1, consistency: 1 }), T(50, { kozAppetite: 100, aggression: 100, consistency: 1 }), T(1, { consistency: 1, memory: 1 }), T(50, { penaltyAvoid: 1 }), T(50, { penaltyAvoid: 100 })];
   const penalty = { KIZ: (c) => c[0] === 'Q', ERKEK: (c) => c[0] === 'K' || c[0] === 'J', KUPA: (c) => suitOf(c) === 'H' };
   let offSuit = 0, checked = 0;
-  for (let g = 0; g < 3; g++) {
+  for (let g = 0; g < 4; g++) {
     const seed = `rules${g}`;
     const bots = [0, 1, 2, 3].map((s) => createBot({ profile: { id: `s${s}`, name: `s${s}`, traits: profiles[(g + s) % profiles.length] }, seed: `${seed}:${s}`, simsScale: 0.1 }));
     let { state } = createGame({ seed });
@@ -417,17 +515,87 @@ test('botlar uç karakter değerlerinde bile renge uyar ve rengi yoksa ceza kart
   assert.ok(checked > 500 && offSuit > 50, `yeterli örnek (${checked}/${offSuit})`);
 });
 
-// ---- bot gücü etiketi ----
-test('botStrength: 5 kategori, normal dağılımlı botların yaklaşık %10/20/40/20/10\'u; güçlü özellikler daha yüksek kategoriye düşer', async () => {
-  const { botStrength, botStrengthScore, sampleTraits } = await import('../src/index.js');
-  const rng = createRng('strength-test');
-  const N = 20000;
-  const counts = [0, 0, 0, 0, 0];
-  for (let i = 0; i < N; i++) counts[botStrength(sampleTraits(rng)) - 1]++;
-  [0.1, 0.2, 0.4, 0.2, 0.1].forEach((p, i) => assert.ok(Math.abs(counts[i] / N - p) < 0.025, `kategori ${i + 1}: ${counts[i] / N}`));
-  assert.equal(botStrength(traitsAll(1)), 1);
-  assert.equal(botStrength(traitsAll(100, { risk: 50 })), 5);
-  assert.ok(botStrengthScore(traitsAll(50, { lookahead: 100 })) > botStrengthScore(traitsAll(50, { inference: 100 })), 'ileri hesap çıkarımdan daha etkili');
-  assert.ok(botStrengthScore(traitsAll(50, { risk: 100 })) < botStrengthScore(traitsAll(50)), 'yüksek risk güç kaybettirir');
-  assert.equal(botStrengthScore(traitsAll(50, { aggression: 1, scoreAwareness: 100, thinkSpeed: 1 })), botStrengthScore(traitsAll(50)), 'tarz özellikleri güce etki etmez');
+// ---- Koz İştahı ve Ceza Kaçınma ----
+// Koz seçilebilen sözleşme seçim anları (ilk elde koz yasak): botlarla oynatılan oyunlardan toplanır
+function kozSelectViews(max) {
+  const views = [];
+  for (let g = 0; g < 6 && views.length < max; g++) {
+    const seed = `kozviews-${g}`;
+    const bots = [0, 1, 2, 3].map((s) => createBot({ profile: profile(`b${s}`, 50), seed: `${seed}:${s}`, simsScale: 0.1 }));
+    let { state } = createGame({ seed });
+    for (let guard = 0; state.phase !== 'GAME_OVER' && state.handNo <= 8 && views.length < max; guard++) {
+      if (state.phase === 'HAND_SCORED') { state = applyCommand(state, { type: 'NEXT_HAND' }).state; continue; }
+      const view = viewFor(state, state.turn);
+      if (state.phase === 'CONTRACT_SELECT' && view.selectable.koz && view.selectable.penalties.length > 0) views.push(view);
+      state = applyCommand(state, bots[state.turn].act(view)).state;
+    }
+  }
+  return views;
+}
+
+test('koz iştahı sözleşme seçimini etkiler: yüksekse KOZ daha sık seçilir, düşükse daha seyrek', { timeout: 120000 }, () => {
+  const views = kozSelectViews(10);
+  assert.ok(views.length >= 6, `yeterli koz seçim anı (${views.length})`);
+  const kozCount = (koz) => views.filter((v, i) => createBot({ profile: profile('k', 50, { kozAppetite: koz }), seed: `kz-${i}`, simsScale: 0.3 }).act(v).contract === 'KOZ').length;
+  const [lo, hi] = [kozCount(1), kozCount(100)];
+  assert.ok(hi > lo, `koz=100: ${hi}/${views.length}, koz=1: ${lo}/${views.length}`);
+});
+
+test('ceza kaçınma: kart seçimi yasal kalır; ağırlık yalnız negatif (ceza) puanı çarpar', () => {
+  const { state } = createGame({ seed: 'ceza' });
+  const view = viewFor(state, state.turn);
+  for (const penaltyAvoid of [1, 50, 100]) {
+    const b = createBot({ profile: profile('c', 50, { penaltyAvoid }), seed: 'ceza', simsScale: 0.2 });
+    const cmd = b.act(view);
+    assert.ok(cmd && (cmd.type === 'CHOOSE_CONTRACT' || view.legalCards.includes(cmd.card)));
+  }
+});
+
+// ---- log'dan yeniden oynatma (tools/replay-log.mjs) ----
+test('replay-log: sunucu akışıyla oynanmış bir oyunun kaydı, botların her kararını birebir yeniden üretir; bozuk kayıt tespit edilir', { timeout: 300000 }, () => {
+  const seed = 'replay-seed:game';
+  const profiles = createBotProfiles({ count: 4, seed: 'replay-p' }).map((p, i) => ({ ...p, id: `bot-${i}` }));
+  const bots = profiles.map((p) => createBot({ profile: p, seed, simsScale: 0.1 }));
+  let { state } = createGame({ seed });
+  while (state.phase !== 'GAME_OVER') {
+    if (state.phase === 'HAND_SCORED') { state = applyCommand(state, { type: 'NEXT_HAND' }).state; continue; }
+    const seat = state.turn;
+    const view = viewFor(state, seat);
+    const cmd = bots[seat].act(view);
+    if (!(state.phase === 'PLAYING' && view.legalCards.length === 1)) bots[seat].thinkDelayMs(); // sunucudaki çekim
+    state = applyCommand(state, cmd).state;
+  }
+  const players = profiles.map((p, i) => ({ seat: i, name: p.name, kind: 'bot', botId: p.id, archetype: p.archetype, archetypeName: p.archetype, traits: p.traits }));
+  const data = { v: 2, seed, code: 'TEST', players, hands: viewFor(state, 0).gameLog };
+  // metin biçimi: işaretli blok geri çözülür
+  const text = ['başlık', '', LOG_JSON_BEGIN, JSON.stringify(data), LOG_JSON_END].join('\n');
+  assert.deepEqual(parseLogText(text), data);
+  assert.throws(() => parseLogText('eski kayıt'), /JSON bloğu yok/);
+
+  const r = replayLog(data, { simsScale: 0.1 });
+  assert.deepEqual(r.integrity, []);
+  assert.deepEqual(r.mismatches, [], JSON.stringify(r.mismatches[0]));
+  for (const p of r.players) assert.ok(p.decisions > 150 && p.matches === p.decisions, `${p.name}: ${p.matches}/${p.decisions}`);
+
+  // kart değiştirilmiş kayıt: sapma ve açıklama
+  const bad = structuredClone(data);
+  const tr = bad.hands[2].tricks[0];
+  [tr.plays[1].card, tr.plays[2].card] = [tr.plays[2].card, tr.plays[1].card]; // iki kartı yer değiştir
+  const r2 = replayLog(bad, { simsScale: 0.1 });
+  assert.ok(r2.integrity.some((m) => /motor hamleyi reddetti/.test(m)), 'kurala aykırı/bozuk hamle motor tarafından yakalanır');
+  // yanlış tohum: dağıtım uyuşmaz
+  const wrong = replayLog({ ...data, seed: 'baska:game' }, { simsScale: 0.1 });
+  assert.ok(wrong.integrity.length > 0, 'yanlış tohum bütünlük sorunu verir');
+  // açıklama modu: aday sıralaması gelir (tek yasal kartlı hamlede karar hesabı yoktur; ilk gerçek kararı bul)
+  let traced = null;
+  outer: for (const hand of data.hands.slice(2)) {
+    for (let t = 0; t < hand.tricks.length; t++) {
+      for (const pl of hand.tricks[t].plays) {
+        const r3 = replayLog(data, { simsScale: 0.1, explain: { hand: hand.handNo, trick: t + 1, seat: pl.seat } });
+        if (r3.explained.length === 1 && r3.explained[0].trace) { traced = r3.explained[0].trace; break outer; }
+      }
+    }
+  }
+  assert.ok(traced, 'en az bir hamle için açıklama izi bulunur');
+  assert.ok(traced.ranked.length >= 1 && traced.kind === 'card');
 });
